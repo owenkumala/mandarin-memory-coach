@@ -18,14 +18,20 @@ def ensure_storage_directories(*directories: str) -> None:
         Path(directory).mkdir(parents=True, exist_ok=True)
 
 
-def validate_audio_upload(original_filename: str, content: bytes) -> None:
-    """Reject empty audio uploads or files outside supported extensions."""
+def validate_audio_upload(
+    original_filename: str,
+    content: bytes,
+    max_bytes: int,
+) -> None:
+    """Reject empty, oversized, or unsupported audio uploads."""
     suffix = Path(original_filename).suffix.lower()
     if suffix not in SUPPORTED_AUDIO_EXTENSIONS:
         supported = ", ".join(sorted(SUPPORTED_AUDIO_EXTENSIONS))
         raise AudioValidationError(f"Unsupported audio extension. Use one of: {supported}.")
     if not content:
         raise AudioValidationError("Audio file is empty.")
+    if len(content) > max_bytes:
+        raise AudioValidationError(f"Audio file is too large. Maximum size is {max_bytes} bytes.")
 
 
 def build_audio_file_path(directory: str, user_id: str, original_filename: str) -> Path:

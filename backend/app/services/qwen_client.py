@@ -5,6 +5,8 @@ interface while fake mode makes the memory pipeline testable without secrets.
 """
 
 import json
+import logging
+import time
 from textwrap import dedent
 
 from openai import AsyncOpenAI, OpenAIError
@@ -18,6 +20,8 @@ from app.schemas import (
     MistakeType,
     WeaknessCategory,
 )
+
+logger = logging.getLogger(__name__)
 
 ANALYSIS_JSON_EXAMPLE = {
     "mistakes": [
@@ -36,6 +40,11 @@ ANALYSIS_JSON_EXAMPLE = {
     "summary": "Short summary of the learner's Mandarin performance.",
     "next_focus": "Next lesson focus.",
     "next_drill": "Specific drill for next practice.",
+}
+
+TURN_JSON_EXAMPLE = {
+    "tutor_reply": "很好！你说：我想吃中国菜。现在请说：请给我一份中国菜。",
+    "feedback": ANALYSIS_JSON_EXAMPLE,
 }
 
 
@@ -58,23 +67,16 @@ class QwenClient:
         level: str,
     ) -> str:
         """Generate a Mandarin tutor reply using current learner memory."""
-        if memory.active_weaknesses:
-            weakness_names = "、".join(
-                weakness.weakness_name for weakness in memory.active_weaknesses[:3]
-            )
-            fake_reply = (
-                f"欢迎回来！我记得你之前需要练习 {weakness_names}。"
-                f"我们先热身，然后继续{scenario}练习。你可以说：我想吃中国菜。"
-            )
-        else:
-            fake_reply = (
-                f"很好！你说的是：{transcript}。我们现在练习{scenario}。"
-                "你可以继续说：我想喝茶。"
-            )
+        fake_reply = _fake_tutor_reply(
+            transcript=transcript,
+            memory=memory,
+            scenario=scenario,
+        )
         if self.settings.USE_FAKE_QWEN:
             return fake_reply
 
         client = self._real_client()
+        started_at = time.perf_counter()
         try:
             response = await client.chat.completions.create(
                 model=self.settings.QWEN_CHAT_MODEL,
@@ -91,9 +93,17 @@ class QwenClient:
                     },
                 ],
                 temperature=0.4,
+                max_tokens=self.settings.QWEN_MAX_TUTOR_TOKENS,
             )
         except OpenAIError as exc:
             raise ValueError("Qwen tutor reply request failed.") from exc
+        finally:
+            elapsed = time.perf_counter() - started_at
+            logger.info(
+                "qwen.tutor_reply_seconds=%.2f model=%s",
+                elapsed,
+                self.settings.QWEN_CHAT_MODEL,
+            )
         return _extract_chat_content(response)
 
     async def analyze_mistakes(
@@ -103,38 +113,16 @@ class QwenClient:
         level: str,
     ) -> AnalysisResponse:
         """Return structured Mandarin feedback with fixed enum categories."""
-        mistakes = [
-            MistakeAnalysis(
-                type=MistakeType.PRONUNCIATION,
-                weakness_category=WeaknessCategory.ZH_CH_CONFUSION,
-                target="中国菜 / 吃",
-                severity=4,
-                feedback="Practice separating zh in 中国 from ch in 吃.",
-                example_sentence="我想吃中国菜。",
-                recommended_drill="Repeat 中国菜 and 想吃 slowly, then in a full sentence.",
-            ),
-            MistakeAnalysis(
-                type=MistakeType.FLUENCY,
-                weakness_category=WeaknessCategory.SENTENCE_LENGTH,
-                target="short answer",
-                severity=3,
-                feedback="Try answering with a complete sentence instead of a short phrase.",
-                example_sentence="我想吃中国菜，也想喝茶。",
-                recommended_drill="Extend answers with 也想, 多少钱, and 我喜欢.",
-            ),
-        ]
-        fake_analysis = AnalysisResponse(
-            mistakes=mistakes,
-            fluency_score=65,
-            confidence_score=60,
-            summary=f"Fake analysis for {level} {scenario}: {transcript}",
-            next_focus="restaurant ordering with clearer zh/ch sounds and fuller answers",
-            next_drill="Practice 中国菜, 想吃, 多少钱, and 我想喝茶.",
+        fake_analysis = _fake_analysis(
+            transcript=transcript,
+            scenario=scenario,
+            level=level,
         )
         if self.settings.USE_FAKE_QWEN:
             return fake_analysis
 
         client = self._real_client()
+        started_at = time.perf_counter()
         try:
             response = await client.chat.completions.create(
                 model=self.settings.QWEN_CHAT_MODEL,
@@ -151,10 +139,72 @@ class QwenClient:
                 ],
                 temperature=0.2,
                 response_format={"type": "json_object"},
+                max_tokens=self.settings.QWEN_MAX_ANALYSIS_TOKENS,
             )
         except OpenAIError as exc:
             raise ValueError("Qwen analysis request failed.") from exc
+        finally:
+            elapsed = time.perf_counter() - started_at
+            logger.info(
+                "qwen.analysis_seconds=%.2f model=%s",
+                elapsed,
+                self.settings.QWEN_CHAT_MODEL,
+            )
         return parse_analysis_json(_extract_chat_content(response))
+
+    async def generate_tutor_turn(
+        self,
+        transcript: str,
+        memory: MemoryResponse,
+        scenario: str,
+        level: str,
+    ) -> tuple[str, AnalysisResponse]:
+        """Generate tutor reply and analysis in one real Qwen chat call."""
+        if self.settings.USE_FAKE_QWEN:
+            return (
+                _fake_tutor_reply(
+                    transcript=transcript,
+                    memory=memory,
+                    scenario=scenario,
+                ),
+                _fake_analysis(
+                    transcript=transcript,
+                    scenario=scenario,
+                    level=level,
+                ),
+            )
+
+        client = self._real_client()
+        started_at = time.perf_counter()
+        try:
+            response = await client.chat.completions.create(
+                model=self.settings.QWEN_CHAT_MODEL,
+                messages=[
+                    {"role": "system", "content": _turn_system_prompt()},
+                    {
+                        "role": "user",
+                        "content": _turn_user_prompt(
+                            transcript=transcript,
+                            memory=memory,
+                            scenario=scenario,
+                            level=level,
+                        ),
+                    },
+                ],
+                temperature=0.25,
+                response_format={"type": "json_object"},
+                max_tokens=self.settings.QWEN_MAX_TURN_TOKENS,
+            )
+        except OpenAIError as exc:
+            raise ValueError("Qwen tutor turn request failed.") from exc
+        finally:
+            elapsed = time.perf_counter() - started_at
+            logger.info(
+                "qwen.tutor_turn_seconds=%.2f model=%s",
+                elapsed,
+                self.settings.QWEN_CHAT_MODEL,
+            )
+        return parse_tutor_turn_json(_extract_chat_content(response))
 
     async def synthesize_speech(self, text: str, output_path: str) -> str | None:
         """Return no tutor audio until real TTS is integrated later."""
@@ -176,6 +226,7 @@ class QwenClient:
         return AsyncOpenAI(
             api_key=self.settings.QWEN_API_KEY,
             base_url=self.settings.QWEN_BASE_URL,
+            timeout=self.settings.QWEN_REQUEST_TIMEOUT_SECONDS,
         )
 
 
@@ -188,6 +239,29 @@ def _tutor_system_prompt() -> str:
         "You must adapt your reply based on the learner memory. "
         "Keep replies short, spoken, and suitable for text-to-speech."
     )
+
+
+def _turn_system_prompt() -> str:
+    """Return the strict combined tutor-turn prompt for one-call voice chat."""
+    allowed_types = ", ".join(mistake_type.value for mistake_type in MistakeType)
+    allowed_categories = ", ".join(category.value for category in WeaknessCategory)
+    return dedent(
+        f"""
+        You are SpeakHan, a Mandarin speaking coach for beginner Mandarin learners.
+        Return JSON only, with no markdown and no extra text.
+        The response must include:
+        - tutor_reply: a short spoken tutor reply in simple Mandarin, with brief
+          English only when useful.
+        - feedback: structured Mandarin mistake analysis.
+        Allowed mistake types: {allowed_types}.
+        Allowed weakness categories: {allowed_categories}.
+        The JSON must match this exact shape:
+        {json.dumps(TURN_JSON_EXAMPLE, ensure_ascii=False, indent=2)}
+        Keep tutor_reply short and suitable for text-to-speech.
+        Severity must be an integer from 1 to 5.
+        Scores must be integers from 0 to 100.
+        """
+    ).strip()
 
 
 def _tutor_user_prompt(
@@ -225,6 +299,30 @@ def _tutor_user_prompt(
     ).strip()
 
 
+def _turn_user_prompt(
+    transcript: str,
+    memory: MemoryResponse,
+    scenario: str,
+    level: str,
+) -> str:
+    """Build the combined tutor-reply and analysis prompt."""
+    tutor_context = _tutor_user_prompt(
+        transcript=transcript,
+        memory=memory,
+        scenario=scenario,
+        level=level,
+    )
+    return dedent(
+        f"""
+        {tutor_context}
+
+        Also analyze this response for Mandarin pronunciation, tone, vocabulary,
+        grammar, fluency, and hesitation weaknesses. Return only valid JSON with
+        tutor_reply and feedback.
+        """
+    ).strip()
+
+
 def _analysis_system_prompt() -> str:
     """Return the strict JSON schema prompt for mistake analysis."""
     allowed_types = ", ".join(mistake_type.value for mistake_type in MistakeType)
@@ -257,6 +355,59 @@ def _analysis_user_prompt(transcript: str, scenario: str, level: str) -> str:
         grammar, fluency, and hesitation weaknesses. Return only valid JSON.
         """
     ).strip()
+
+
+def _fake_tutor_reply(
+    transcript: str,
+    memory: MemoryResponse,
+    scenario: str,
+) -> str:
+    """Return the stable fake tutor reply used by tests and local demos."""
+    if memory.active_weaknesses:
+        weakness_names = "、".join(
+            weakness.weakness_name for weakness in memory.active_weaknesses[:3]
+        )
+        return (
+            f"欢迎回来！我记得你之前需要练习 {weakness_names}。"
+            f"我们先热身，然后继续{scenario}练习。你可以说：我想吃中国菜。"
+        )
+
+    return (
+        f"很好！你说的是：{transcript}。我们现在练习{scenario}。"
+        "你可以继续说：我想喝茶。"
+    )
+
+
+def _fake_analysis(transcript: str, scenario: str, level: str) -> AnalysisResponse:
+    """Return the stable fake structured feedback for tests and local demos."""
+    mistakes = [
+        MistakeAnalysis(
+            type=MistakeType.PRONUNCIATION,
+            weakness_category=WeaknessCategory.ZH_CH_CONFUSION,
+            target="中国菜 / 吃",
+            severity=4,
+            feedback="Practice separating zh in 中国 from ch in 吃.",
+            example_sentence="我想吃中国菜。",
+            recommended_drill="Repeat 中国菜 and 想吃 slowly, then in a full sentence.",
+        ),
+        MistakeAnalysis(
+            type=MistakeType.FLUENCY,
+            weakness_category=WeaknessCategory.SENTENCE_LENGTH,
+            target="short answer",
+            severity=3,
+            feedback="Try answering with a complete sentence instead of a short phrase.",
+            example_sentence="我想吃中国菜，也想喝茶。",
+            recommended_drill="Extend answers with 也想, 多少钱, and 我喜欢.",
+        ),
+    ]
+    return AnalysisResponse(
+        mistakes=mistakes,
+        fluency_score=65,
+        confidence_score=60,
+        summary=f"Fake analysis for {level} {scenario}: {transcript}",
+        next_focus="restaurant ordering with clearer zh/ch sounds and fuller answers",
+        next_drill="Practice 中国菜, 想吃, 多少钱, and 我想喝茶.",
+    )
 
 
 def _extract_chat_content(response: object) -> str:
@@ -299,3 +450,28 @@ def parse_analysis_json(content: str) -> AnalysisResponse:
         raise ValueError(
             "Qwen analysis response did not match the expected schema or enums."
         ) from exc
+
+
+def parse_tutor_turn_json(content: str) -> tuple[str, AnalysisResponse]:
+    """Parse combined Qwen turn JSON into tutor reply and feedback schema."""
+    json_content = strip_json_code_fence(content)
+    try:
+        payload = json.loads(json_content)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Qwen tutor turn response was not valid JSON.") from exc
+
+    tutor_reply = payload.get("tutor_reply") if isinstance(payload, dict) else None
+    if not isinstance(tutor_reply, str) or not tutor_reply.strip():
+        raise ValueError("Qwen tutor turn response was missing tutor_reply.")
+
+    feedback = payload.get("feedback") if isinstance(payload, dict) else None
+    if feedback is None:
+        raise ValueError("Qwen tutor turn response was missing feedback.")
+
+    try:
+        analysis = AnalysisResponse.model_validate(feedback)
+    except ValidationError as exc:
+        raise ValueError(
+            "Qwen tutor turn feedback did not match the expected schema or enums."
+        ) from exc
+    return tutor_reply.strip(), analysis

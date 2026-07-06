@@ -10,6 +10,8 @@ __MACOSX/
 storage/*
 !storage/.gitkeep
 !storage/user_audio/
+storage/user_audio/*
 !storage/user_audio/.gitkeep
 !storage/tutor_audio/
+storage/tutor_audio/*
 !storage/tutor_audio/.gitkeep

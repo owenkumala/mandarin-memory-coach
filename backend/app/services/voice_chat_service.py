@@ -5,6 +5,9 @@ Qwen calls, session storage, weakness updates, lesson-plan creation, and the
 final response assembly.
 """
 
+import logging
+import time
+
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
 
@@ -26,6 +29,8 @@ from app.utils.audio import (
     write_audio_bytes,
 )
 
+logger = logging.getLogger(__name__)
+
 
 async def run_voice_chat_pipeline(
     db: Session,
@@ -35,37 +40,48 @@ async def run_voice_chat_pipeline(
     level: str,
 ) -> VoiceChatResponse:
     """Run the complete voice-chat pipeline and return the API response."""
+    pipeline_started_at = time.perf_counter()
     settings = get_settings()
     qwen_client = QwenClient(settings=settings)
 
     # Persist learner audio first so raw session memory exists even in fake mode.
+    read_started_at = time.perf_counter()
+    audio_content = await audio.read()
+    _log_elapsed("voice_chat.read_audio_seconds", read_started_at)
+
+    save_started_at = time.perf_counter()
     audio_path = build_audio_file_path(
         settings.USER_AUDIO_DIR,
         user_id,
         audio.filename or "audio.webm",
     )
-    audio_content = await audio.read()
-    validate_audio_upload(audio.filename or "", audio_content)
+    validate_audio_upload(
+        audio.filename or "",
+        audio_content,
+        settings.MAX_AUDIO_UPLOAD_BYTES,
+    )
     saved_audio_path = await write_audio_bytes(audio_path, audio_content)
+    _log_elapsed("voice_chat.validate_save_audio_seconds", save_started_at)
 
     # Load memory before generating the reply so Qwen can adapt to past mistakes.
     get_or_create_user(db, user_id=user_id, mandarin_level=level)
     memory_before = get_memory(db, user_id=user_id)
 
+    asr_started_at = time.perf_counter()
     transcript = await qwen_client.transcribe_audio(saved_audio_path)
-    tutor_reply = await qwen_client.generate_tutor_reply(
+    _log_elapsed("voice_chat.transcribe_seconds", asr_started_at)
+
+    feedback_started_at = time.perf_counter()
+    tutor_reply, analysis = await qwen_client.generate_tutor_turn(
         transcript=transcript,
         memory=memory_before,
         scenario=scenario,
         level=level,
     )
-    analysis = await qwen_client.analyze_mistakes(
-        transcript=transcript,
-        scenario=scenario,
-        level=level,
-    )
+    _log_elapsed("voice_chat.generate_feedback_seconds", feedback_started_at)
 
     # Store raw and structured memory before computing the updated working state.
+    session_started_at = time.perf_counter()
     session = save_session(
         db,
         user_id=user_id,
@@ -75,9 +91,19 @@ async def run_voice_chat_pipeline(
         summary=analysis.summary,
         audio_path=saved_audio_path,
     )
+    _log_elapsed("voice_chat.save_session_seconds", session_started_at)
+
+    mistakes_started_at = time.perf_counter()
     save_mistakes(db, user_id=user_id, session_id=session.id, mistakes=analysis.mistakes)
+    _log_elapsed("voice_chat.save_mistakes_seconds", mistakes_started_at)
+
+    weaknesses_started_at = time.perf_counter()
     update_active_weaknesses(db, user_id=user_id, mistakes=analysis.mistakes)
+    _log_elapsed("voice_chat.update_weaknesses_seconds", weaknesses_started_at)
+
     memory_after_weakness_update = get_memory(db, user_id=user_id)
+
+    lesson_started_at = time.perf_counter()
     create_lesson_plan(
         db,
         user_id=user_id,
@@ -85,15 +111,19 @@ async def run_voice_chat_pipeline(
         memory=memory_after_weakness_update,
         scenario=scenario,
     )
+    _log_elapsed("voice_chat.create_lesson_plan_seconds", lesson_started_at)
 
+    tts_started_at = time.perf_counter()
     tutor_audio_url = await _generate_tutor_audio_url(
         qwen_client=qwen_client,
         tutor_reply=tutor_reply,
         user_id=user_id,
     )
+    _log_elapsed("voice_chat.tts_seconds", tts_started_at)
+
     memory_after = get_memory(db, user_id=user_id)
 
-    return VoiceChatResponse(
+    response = VoiceChatResponse(
         user_id=user_id,
         scenario=scenario,
         level=level,
@@ -105,6 +135,8 @@ async def run_voice_chat_pipeline(
         memory_after=memory_after,
         memory_updated=True,
     )
+    _log_elapsed("voice_chat.total_seconds", pipeline_started_at)
+    return response
 
 
 async def _generate_tutor_audio_url(
@@ -122,3 +154,9 @@ async def _generate_tutor_audio_url(
     if synthesized_path is None:
         return None
     return storage_url(synthesized_path, settings.STORAGE_DIR)
+
+
+def _log_elapsed(metric_name: str, started_at: float) -> None:
+    """Log elapsed seconds for one voice-chat pipeline stage."""
+    elapsed = time.perf_counter() - started_at
+    logger.info("%s=%.2f", metric_name, elapsed)

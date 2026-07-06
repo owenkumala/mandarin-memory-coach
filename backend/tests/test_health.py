@@ -155,6 +155,19 @@ def test_voice_chat_rejects_unsupported_audio_extension() -> None:
     assert "Unsupported audio extension" in response.json()["detail"]
 
 
+def test_voice_chat_rejects_oversized_audio_file() -> None:
+    """POST /voice-chat rejects uploads larger than the configured limit."""
+    with TestClient(app) as client:
+        response = _voice_chat_response(
+            client,
+            user_id="demo-user-large-audio",
+            content=b"x" * 5_000_001,
+        )
+
+    assert response.status_code == 400
+    assert "Audio file is too large" in response.json()["detail"]
+
+
 def test_repeated_mistake_score_stays_at_or_above_latest_severity() -> None:
     """Repeated mistakes keep the weakness score at least at latest severity."""
     user_id = "demo-user-scoring"
