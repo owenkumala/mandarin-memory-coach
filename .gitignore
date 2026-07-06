@@ -3,3 +3,13 @@ __MACOSX/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Backend runtime artifacts.
+.env
+*.db
+backend/storage/*
+!backend/storage/.gitkeep
+!backend/storage/user_audio/
+!backend/storage/user_audio/.gitkeep
+!backend/storage/tutor_audio/
+!backend/storage/tutor_audio/.gitkeep

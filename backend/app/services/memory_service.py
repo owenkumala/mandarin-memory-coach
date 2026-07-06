@@ -219,11 +219,14 @@ def _apply_weakness_score_update(
     """Apply the custom longitudinal recurrence scoring formula."""
     weakness.times_failed += 1
     recurrence_bonus = min(weakness.times_failed / 5, 1.0)
-    new_score = min(
-        5.0,
+    weighted_score = (
         weakness.severity_score * 0.65
         + mistake.severity * 0.25
-        + recurrence_bonus * 0.10,
+        + recurrence_bonus * 0.10
+    )
+    new_score = min(
+        5.0,
+        max(float(mistake.severity), weighted_score),
     )
     weakness.severity_score = round(new_score, 2)
     weakness.status = _status_for_score(new_score).value
