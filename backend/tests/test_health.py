@@ -28,17 +28,27 @@ from app.services.memory_service import (  # noqa: E402
 
 def _post_voice_chat(client: TestClient, user_id: str) -> dict:
     """Post a dummy audio file and return the parsed JSON response."""
-    response = client.post(
+    response = _voice_chat_response(client, user_id=user_id)
+    assert response.status_code == 200
+    return response.json()
+
+
+def _voice_chat_response(
+    client: TestClient,
+    user_id: str,
+    filename: str = "sample.webm",
+    content: bytes = b"fake audio bytes",
+) -> object:
+    """Post audio to voice-chat and return the raw test response."""
+    return client.post(
         "/api/v1/voice-chat",
         data={
             "user_id": user_id,
             "scenario": "restaurant ordering",
             "level": "HSK1 beginner",
         },
-        files={"audio": ("sample.webm", b"fake audio bytes", "audio/webm")},
+        files={"audio": (filename, content, "audio/webm")},
     )
-    assert response.status_code == 200
-    return response.json()
 
 
 def test_health_returns_backend_status() -> None:
@@ -81,6 +91,32 @@ def test_memory_returns_active_weaknesses_after_voice_chat() -> None:
     assert body["latest_lesson_plan"]["next_scenario"] == "restaurant ordering"
 
 
+def test_lesson_plan_returns_default_for_new_user() -> None:
+    """GET /lesson-plan/{user_id} returns a starter lesson for new users."""
+    with TestClient(app) as client:
+        response = client.get("/api/v1/lesson-plan/demo-user-new-lesson")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["focus_area"] == "restaurant ordering basics"
+    assert body["next_scenario"] == "restaurant ordering"
+    assert "中国菜" in body["target_words"]
+
+
+def test_lesson_plan_returns_saved_adaptive_lesson_after_voice_chat() -> None:
+    """GET /lesson-plan/{user_id} returns the saved adaptive lesson."""
+    user_id = "demo-user-adaptive-lesson"
+    with TestClient(app) as client:
+        _post_voice_chat(client, user_id)
+        response = client.get(f"/api/v1/lesson-plan/{user_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["focus_area"] == "zh/ch pronunciation confusion"
+    assert body["recommended_drill"] == "Practice 中国菜, 想吃, 多少钱, and 我想喝茶."
+    assert body["next_scenario"] == "restaurant ordering"
+
+
 def test_second_voice_chat_uses_memory_in_tutor_reply() -> None:
     """The second voice-chat response references prior active weaknesses."""
     user_id = "demo-user-repeat"
@@ -91,6 +127,32 @@ def test_second_voice_chat_uses_memory_in_tutor_reply() -> None:
     assert "欢迎回来" in second_response["tutor_reply"]
     assert "我记得你之前需要练习" in second_response["tutor_reply"]
     assert second_response["memory_before"]["active_weaknesses"]
+
+
+def test_voice_chat_rejects_empty_audio_file() -> None:
+    """POST /voice-chat rejects empty audio uploads with a client error."""
+    with TestClient(app) as client:
+        response = _voice_chat_response(
+            client,
+            user_id="demo-user-empty-audio",
+            content=b"",
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Audio file is empty."
+
+
+def test_voice_chat_rejects_unsupported_audio_extension() -> None:
+    """POST /voice-chat rejects unsupported upload file extensions."""
+    with TestClient(app) as client:
+        response = _voice_chat_response(
+            client,
+            user_id="demo-user-bad-audio",
+            filename="sample.txt",
+        )
+
+    assert response.status_code == 400
+    assert "Unsupported audio extension" in response.json()["detail"]
 
 
 def test_repeated_mistake_score_stays_at_or_above_latest_severity() -> None:

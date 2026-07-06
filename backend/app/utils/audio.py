@@ -5,11 +5,27 @@ from uuid import uuid4
 
 import aiofiles
 
+SUPPORTED_AUDIO_EXTENSIONS = {".webm", ".wav", ".mp3", ".m4a"}
+
+
+class AudioValidationError(ValueError):
+    """Raised when an uploaded audio file is missing or unsupported."""
+
 
 def ensure_storage_directories(*directories: str) -> None:
     """Create storage directories needed by upload and tutor-audio flows."""
     for directory in directories:
         Path(directory).mkdir(parents=True, exist_ok=True)
+
+
+def validate_audio_upload(original_filename: str, content: bytes) -> None:
+    """Reject empty audio uploads or files outside supported extensions."""
+    suffix = Path(original_filename).suffix.lower()
+    if suffix not in SUPPORTED_AUDIO_EXTENSIONS:
+        supported = ", ".join(sorted(SUPPORTED_AUDIO_EXTENSIONS))
+        raise AudioValidationError(f"Unsupported audio extension. Use one of: {supported}.")
+    if not content:
+        raise AudioValidationError("Audio file is empty.")
 
 
 def build_audio_file_path(directory: str, user_id: str, original_filename: str) -> Path:

@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
@@ -75,6 +75,13 @@ class ActiveWeakness(Base):
     """Longitudinal memory row for a recurring learner weakness."""
 
     __tablename__ = "active_weaknesses"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "weakness_category",
+            name="uq_active_weakness_user_category",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), index=True)

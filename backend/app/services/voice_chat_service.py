@@ -19,7 +19,12 @@ from app.services.memory_service import (
     update_active_weaknesses,
 )
 from app.services.qwen_client import QwenClient
-from app.utils.audio import build_audio_file_path, storage_url, write_audio_bytes
+from app.utils.audio import (
+    build_audio_file_path,
+    storage_url,
+    validate_audio_upload,
+    write_audio_bytes,
+)
 
 
 async def run_voice_chat_pipeline(
@@ -40,6 +45,7 @@ async def run_voice_chat_pipeline(
         audio.filename or "audio.webm",
     )
     audio_content = await audio.read()
+    validate_audio_upload(audio.filename or "", audio_content)
     saved_audio_path = await write_audio_bytes(audio_path, audio_content)
 
     # Load memory before generating the reply so Qwen can adapt to past mistakes.
