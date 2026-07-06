@@ -1,6 +1,7 @@
 """Unit tests for fake and real-mode Qwen client helpers."""
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, Mock
 
 from openai import APIConnectionError, APITimeoutError
@@ -11,6 +12,7 @@ from app.schemas import AnalysisResponse, MemoryResponse
 from app.services.qwen_client import (
     QwenClient,
     _extract_asr_transcript,
+    _safe_error_detail,
     parse_analysis_json,
     parse_tutor_turn_json,
     strip_json_code_fence,
@@ -204,8 +206,8 @@ def test_asr_malformed_response_raises_useful_error() -> None:
         _extract_asr_transcript(Mock(text=None))
 
 
-def test_asr_openai_error_becomes_value_error(tmp_path) -> None:
-    """ASR OpenAIError is converted into a useful ValueError."""
+def test_asr_openai_error_becomes_value_error_and_logs_detail(tmp_path, caplog) -> None:
+    """ASR OpenAIError is logged safely before conversion to ValueError."""
     audio_path = tmp_path / "sample.webm"
     audio_path.write_bytes(b"fake audio")
     client = QwenClient(
@@ -221,9 +223,29 @@ def test_asr_openai_error_becomes_value_error(tmp_path) -> None:
         side_effect=APIConnectionError(request=Mock())
     )
     client._asr_client = Mock(return_value=mock_qwen)
+    caplog.set_level(logging.WARNING, logger="app.services.qwen_client")
 
     with pytest.raises(ValueError, match="Qwen ASR request failed."):
         asyncio.run(client.transcribe_audio(str(audio_path)))
+
+    assert "qwen.asr_openai_error" in caplog.text
+    assert "APIConnectionError" in caplog.text
+    assert "test-key" not in caplog.text
+
+
+def test_safe_error_detail_redacts_configured_api_key() -> None:
+    """Logged error details redact configured secrets defensively."""
+    settings = Settings(QWEN_API_KEY="secret-key")
+
+    detail = _safe_error_detail(
+        {
+            "message": "Authorization failed for secret-key",
+            "authorization": "Bearer secret-key",
+        },
+        settings,
+    )
+
+    assert detail == {"message": "Authorization failed for [redacted]"}
 
 
 def test_asr_timeout_error_has_specific_message(tmp_path) -> None:

@@ -80,8 +80,20 @@ class QwenClient:
         except OSError as exc:
             raise ValueError("Audio file for Qwen ASR could not be read.") from exc
         except APITimeoutError as exc:
+            _log_openai_error(
+                operation="asr",
+                exc=exc,
+                model=self.settings.QWEN_ASR_MODEL,
+                settings=self.settings,
+            )
             raise ValueError(_qwen_asr_timeout_message(self.settings)) from exc
         except OpenAIError as exc:
+            _log_openai_error(
+                operation="asr",
+                exc=exc,
+                model=self.settings.QWEN_ASR_MODEL,
+                settings=self.settings,
+            )
             raise ValueError("Qwen ASR request failed.") from exc
         finally:
             elapsed = time.perf_counter() - started_at
@@ -325,6 +337,62 @@ def _qwen_asr_timeout_message(settings: Settings) -> str:
         f"{settings.QWEN_ASR_REQUEST_TIMEOUT_SECONDS:.0f} seconds using model "
         f"{settings.QWEN_ASR_MODEL}."
     )
+
+
+def _log_openai_error(
+    operation: str,
+    exc: OpenAIError,
+    model: str,
+    settings: Settings,
+) -> None:
+    """Log safe OpenAI error details for local debugging without secrets."""
+    details = {
+        "error_type": type(exc).__name__,
+        "status_code": getattr(exc, "status_code", None),
+        "code": getattr(exc, "code", None),
+        "message": _safe_error_detail(_openai_error_message(exc), settings),
+        "body": _safe_error_detail(getattr(exc, "body", None), settings),
+    }
+    safe_details = {
+        key: value
+        for key, value in details.items()
+        if value not in (None, "", {}, [])
+    }
+    logger.warning(
+        "qwen.%s_openai_error model=%s details=%s",
+        operation,
+        model,
+        safe_details,
+    )
+
+
+def _openai_error_message(exc: OpenAIError) -> str:
+    """Return the most useful OpenAI error message available."""
+    message = getattr(exc, "message", None)
+    if isinstance(message, str) and message.strip():
+        return message
+    return str(exc)
+
+
+def _safe_error_detail(value: object, settings: Settings) -> object:
+    """Redact configured secrets and keep logged error details compact."""
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        return {
+            str(key): _safe_error_detail(nested_value, settings)
+            for key, nested_value in value.items()
+            if str(key).lower() not in {"authorization", "api_key", "api-key"}
+        }
+    if isinstance(value, list):
+        return [_safe_error_detail(item, settings) for item in value[:5]]
+
+    text = str(value)
+    if settings.QWEN_API_KEY:
+        text = text.replace(settings.QWEN_API_KEY, "[redacted]")
+    if len(text) > 500:
+        text = f"{text[:500]}..."
+    return text
 
 
 def _turn_system_prompt() -> str:
