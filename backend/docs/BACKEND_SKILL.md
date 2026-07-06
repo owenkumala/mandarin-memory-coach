@@ -1,9 +1,167 @@
-# Backend Skill — SpeakHan (Mandarin Memory Coach)
+# Backend Skill — SpeakHan / Mandarin Memory Coach
 
 This document defines how backend code must be written, organized, and committed
 in this repository. Any AI tool or contributor generating backend code
 (FastAPI + SQLAlchemy + Qwen integration) must follow this skill exactly.
 When in doubt, prefer the simpler, more explicit option over a clever one.
+
+---
+
+## 0. Backend handoff summary
+
+### Product summary
+
+SpeakHan / Mandarin Memory Coach is a Qwen-powered Mandarin speaking memory
+coach for the MemoryAgent hackathon track. It is not a generic Mandarin
+chatbot: it tracks each learner's recurring pronunciation, tone, vocabulary,
+grammar, fluency, and hesitation weaknesses across sessions, then adapts later
+practice to those memories.
+
+The demo loop is:
+
+1. Learner speaks Mandarin through `/api/v1/voice-chat`.
+2. The backend transcribes speech. ASR is currently fake and returns `我想吃中国菜`.
+3. Qwen generates a short tutor reply and structured feedback JSON.
+4. The backend saves the session, mistakes, and active weaknesses.
+5. The next session retrieves memory and adapts the lesson.
+
+The key demo moment is that the coach can say, in effect: "Welcome back. Last
+time you struggled with zh/ch pronunciation and tone accuracy. Let's warm that
+up first."
+
+### Current backend architecture
+
+- FastAPI API-only backend.
+- SQLite MVP memory database.
+- SQLAlchemy ORM models for users, sessions, mistakes, active weaknesses, and
+  lesson plans.
+- Pydantic schemas and enums for endpoint contracts and Qwen structured output.
+- Fake-first Qwen client in `app/services/qwen_client.py`.
+- Alibaba Cloud Model Studio OpenAI-compatible chat API for real tutor reply
+  and structured feedback.
+- Local audio storage under `backend/storage/`.
+- `memory_service.py` owns DB reads/writes for learner memory.
+- `lesson_service.py` owns lesson-plan persistence and defaults.
+- `voice_chat_service.py` owns the voice-chat orchestration pipeline.
+
+### Current API endpoints
+
+- `GET /api/v1/health`: returns backend status, project name, fake-Qwen mode,
+  and database type.
+- `POST /api/v1/voice-chat`: accepts multipart form data with:
+  - `audio`: uploaded `.webm`, `.wav`, `.mp3`, or `.m4a` file.
+  - `user_id`: learner id, defaulting to demo usage.
+  - `scenario`: speaking scenario such as `restaurant ordering`.
+  - `level`: learner level such as `HSK1 beginner`.
+- `GET /api/v1/memory/{user_id}`: returns active weaknesses, recent sessions,
+  and latest lesson plan.
+- `GET /api/v1/lesson-plan/{user_id}`: returns the latest lesson plan or a
+  starter lesson for new users.
+
+The `/voice-chat` response includes the fake transcript, Qwen tutor reply,
+optional tutor audio URL, structured feedback, memory before and after, and a
+`memory_updated` flag. `tutor_audio_url` is currently `null` because TTS is not
+implemented yet.
+
+### Current Qwen status
+
+- Real Qwen tutor reply and structured feedback work when
+  `USE_FAKE_QWEN=false`.
+- The local code uses a combined Qwen turn call for lower latency: one Qwen
+  request returns both `tutor_reply` and `feedback`.
+- Fake mode remains available for tests and development.
+- ASR remains fake; `transcribe_audio()` returns `我想吃中国菜`.
+- TTS remains fake; `synthesize_speech()` returns `None`.
+
+### Recommended model settings
+
+- Recommended live demo model: `QWEN_CHAT_MODEL=qwen-plus`.
+- Manual local testing showed `qwen-plus` completing the full `/voice-chat`
+  request in about 7.85 seconds in this environment.
+- Fallback model: `qwen3.6-flash`. It completed successfully but took about
+  21.76 seconds in this environment.
+- Stronger/newer models can be used when latency is less important, but
+  `qwen-plus` is recommended for the live demo because it gave the most
+  reliable low-latency response in manual testing.
+- `qwen3.7-plus` may be slower or less suitable for live demo latency in this
+  environment because it timed out during testing.
+
+### Current environment variables
+
+Use placeholders only; never commit real secrets.
+
+```env
+USE_FAKE_QWEN=true
+QWEN_API_KEY=
+QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+QWEN_CHAT_MODEL=qwen-plus
+QWEN_REQUEST_TIMEOUT_SECONDS=30
+QWEN_MAX_RETRIES=0
+QWEN_MAX_TURN_TOKENS=500
+QWEN_MAX_TUTOR_TOKENS=180
+QWEN_MAX_ANALYSIS_TOKENS=650
+MAX_AUDIO_UPLOAD_BYTES=5000000
+DATABASE_URL=sqlite:///./memory.db
+STORAGE_DIR=./storage
+USER_AUDIO_DIR=./storage/user_audio
+TUTOR_AUDIO_DIR=./storage/tutor_audio
+```
+
+### Local run instructions
+
+```bash
+cd backend
+python3 -m pip install -r requirements.txt
+python3 -m uvicorn app.main:app --reload --port 8000
+```
+
+API docs are available at:
+
+```text
+http://localhost:8000/docs
+```
+
+### Manual test command
+
+```bash
+printf "fake audio" > sample.webm
+
+time curl -s -X POST http://localhost:8000/api/v1/voice-chat \
+  -F "audio=@sample.webm;type=audio/webm" \
+  -F "user_id=demo-user-latency-test" \
+  -F "scenario=restaurant ordering" \
+  -F "level=HSK1 beginner"
+```
+
+Expected:
+
+- `transcript`: `我想吃中国菜`
+- tutor reply from Qwen when real mode is enabled
+- feedback JSON from Qwen when real mode is enabled
+- memory updates
+- `tutor_audio_url=null`
+
+### Testing
+
+```bash
+cd backend
+python3 -m pytest
+```
+
+Automated tests must not call live Qwen. Keep live Qwen checks manual.
+
+### Engineering rules quick reference
+
+- Keep route files thin.
+- Put orchestration and business logic in services.
+- Put Qwen calls only in `app/services/qwen_client.py`.
+- Put DB logic in `memory_service.py` and `lesson_service.py`.
+- Use explicit Pydantic `response_model` schemas for every endpoint.
+- Keep fake-first external dependencies working.
+- Never commit `.env`, API keys, SQLite DB files, generated audio, or storage
+  artifacts.
+- Never log API keys or secrets.
+- Keep tests non-live.
 
 ---
 
