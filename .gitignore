@@ -15,3 +15,5 @@ backend/storage/user_audio/*
 !backend/storage/tutor_audio/
 backend/storage/tutor_audio/*
 !backend/storage/tutor_audio/.gitkeep
+sample.webm
+

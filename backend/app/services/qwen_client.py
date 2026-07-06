@@ -9,7 +9,7 @@ import logging
 import time
 from textwrap import dedent
 
-from openai import AsyncOpenAI, OpenAIError
+from openai import APITimeoutError, AsyncOpenAI, OpenAIError
 from pydantic import ValidationError
 
 from app.core.config import Settings
@@ -95,6 +95,8 @@ class QwenClient:
                 temperature=0.4,
                 max_tokens=self.settings.QWEN_MAX_TUTOR_TOKENS,
             )
+        except APITimeoutError as exc:
+            raise ValueError(_qwen_timeout_message("tutor reply", self.settings)) from exc
         except OpenAIError as exc:
             raise ValueError("Qwen tutor reply request failed.") from exc
         finally:
@@ -141,6 +143,8 @@ class QwenClient:
                 response_format={"type": "json_object"},
                 max_tokens=self.settings.QWEN_MAX_ANALYSIS_TOKENS,
             )
+        except APITimeoutError as exc:
+            raise ValueError(_qwen_timeout_message("analysis", self.settings)) from exc
         except OpenAIError as exc:
             raise ValueError("Qwen analysis request failed.") from exc
         finally:
@@ -195,6 +199,8 @@ class QwenClient:
                 response_format={"type": "json_object"},
                 max_tokens=self.settings.QWEN_MAX_TURN_TOKENS,
             )
+        except APITimeoutError as exc:
+            raise ValueError(_qwen_timeout_message("tutor turn", self.settings)) from exc
         except OpenAIError as exc:
             raise ValueError("Qwen tutor turn request failed.") from exc
         finally:
@@ -239,6 +245,14 @@ def _tutor_system_prompt() -> str:
         "You may include brief English explanations only when useful. "
         "You must adapt your reply based on the learner memory. "
         "Keep replies short, spoken, and suitable for text-to-speech."
+    )
+
+
+def _qwen_timeout_message(operation: str, settings: Settings) -> str:
+    """Return a clear timeout message without exposing credentials."""
+    return (
+        f"Qwen {operation} request timed out after "
+        f"{settings.QWEN_REQUEST_TIMEOUT_SECONDS:.0f} seconds."
     )
 
 

@@ -3,7 +3,7 @@
 import asyncio
 from unittest.mock import AsyncMock, Mock
 
-from openai import APIConnectionError
+from openai import APIConnectionError, APITimeoutError
 import pytest
 
 from app.core.config import Settings
@@ -183,6 +183,34 @@ def test_generate_tutor_turn_openai_error_becomes_value_error() -> None:
     client._real_client = Mock(return_value=mock_qwen)
 
     with pytest.raises(ValueError, match="Qwen tutor turn request failed."):
+        asyncio.run(
+            client.generate_tutor_turn(
+                transcript="我想吃中国菜",
+                memory=_empty_memory(),
+                scenario="restaurant ordering",
+                level="HSK1 beginner",
+            )
+        )
+
+
+def test_generate_tutor_turn_timeout_error_has_specific_message() -> None:
+    """Combined Qwen timeout includes the configured timeout in the error."""
+    client = QwenClient(
+        settings=Settings(
+            USE_FAKE_QWEN=False,
+            QWEN_API_KEY="test-key",
+            QWEN_BASE_URL="https://example.com/compatible-mode/v1",
+            QWEN_CHAT_MODEL="qwen-plus",
+            QWEN_REQUEST_TIMEOUT_SECONDS=25,
+        )
+    )
+    mock_qwen = Mock()
+    mock_qwen.chat.completions.create = AsyncMock(
+        side_effect=APITimeoutError(request=Mock())
+    )
+    client._real_client = Mock(return_value=mock_qwen)
+
+    with pytest.raises(ValueError, match="Qwen tutor turn request timed out after 25 seconds."):
         asyncio.run(
             client.generate_tutor_turn(
                 transcript="我想吃中国菜",
