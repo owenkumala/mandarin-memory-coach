@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     QWEN_MAX_TUTOR_TOKENS: int = 180
     QWEN_MAX_ANALYSIS_TOKENS: int = 650
     QWEN_MAX_TURN_TOKENS: int = 900
+    QWEN_MAX_RETRIES: int = 0
     MAX_AUDIO_UPLOAD_BYTES: int = 5_000_000
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

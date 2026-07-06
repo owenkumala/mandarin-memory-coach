@@ -17,16 +17,20 @@ USE_FAKE_QWEN=false
 QWEN_API_KEY=...
 QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 QWEN_CHAT_MODEL=qwen3.7-plus
-QWEN_REQUEST_TIMEOUT_SECONDS=45
+QWEN_REQUEST_TIMEOUT_SECONDS=30
 QWEN_MAX_TURN_TOKENS=900
 QWEN_MAX_TUTOR_TOKENS=180
 QWEN_MAX_ANALYSIS_TOKENS=650
+QWEN_MAX_RETRIES=0
 MAX_AUDIO_UPLOAD_BYTES=5000000
 ```
 
 Do not commit `.env`; it contains secrets and is ignored by git.
 
 For faster demo testing, try `QWEN_CHAT_MODEL=qwen3.6-flash`.
+For live demos, keep `QWEN_MAX_RETRIES=0` so failed Qwen requests fail fast
+instead of waiting through multiple SDK retries. A `QWEN_REQUEST_TIMEOUT_SECONDS`
+value of `25` or `30` is usually better for demo UX than a long timeout.
 
 ## What is real in this first Qwen commit
 

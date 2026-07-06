@@ -227,6 +227,7 @@ class QwenClient:
             api_key=self.settings.QWEN_API_KEY,
             base_url=self.settings.QWEN_BASE_URL,
             timeout=self.settings.QWEN_REQUEST_TIMEOUT_SECONDS,
+            max_retries=self.settings.QWEN_MAX_RETRIES,
         )
 
 
