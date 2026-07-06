@@ -16,7 +16,7 @@ Create or update `backend/.env` with:
 USE_FAKE_QWEN=false
 QWEN_API_KEY=...
 QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-QWEN_CHAT_MODEL=qwen3.7-plus
+QWEN_CHAT_MODEL=qwen-plus
 QWEN_REQUEST_TIMEOUT_SECONDS=30
 QWEN_MAX_TURN_TOKENS=900
 QWEN_MAX_TUTOR_TOKENS=180
@@ -27,7 +27,18 @@ MAX_AUDIO_UPLOAD_BYTES=5000000
 
 Do not commit `.env`; it contains secrets and is ignored by git.
 
-For faster demo testing, try `QWEN_CHAT_MODEL=qwen3.6-flash`.
+For live demo reliability, use `QWEN_CHAT_MODEL=qwen-plus`. In manual
+real-Qwen `/voice-chat` testing, `qwen-plus` completed the full request in about
+7.85 seconds in this environment.
+
+`QWEN_CHAT_MODEL` is configurable. Stronger or newer Qwen models can be used
+when answer quality matters more than latency. For example, `qwen3.7-plus` may
+produce strong responses but can be slower or less suitable for live demo
+latency in this environment.
+
+As an alternative fallback, `QWEN_CHAT_MODEL=qwen3.6-flash` completed in manual
+testing but took about 21.76 seconds here.
+
 For live demos, keep `QWEN_MAX_RETRIES=0` so failed Qwen requests fail fast
 instead of waiting through multiple SDK retries. A `QWEN_REQUEST_TIMEOUT_SECONDS`
 value of `25` or `30` is usually better for demo UX than a long timeout.
