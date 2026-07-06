@@ -10,6 +10,7 @@ from app.core.config import Settings
 from app.schemas import AnalysisResponse, MemoryResponse
 from app.services.qwen_client import (
     QwenClient,
+    _extract_asr_transcript,
     parse_analysis_json,
     parse_tutor_turn_json,
     strip_json_code_fence,
@@ -95,6 +96,15 @@ def test_generate_tutor_turn_fake_mode_returns_reply_and_analysis() -> None:
     assert analysis.mistakes[0].weakness_category.value == "zh_ch_confusion"
 
 
+def test_fake_asr_still_returns_fixed_transcript() -> None:
+    """Fake mode keeps ASR deterministic and credential-free."""
+    client = QwenClient(settings=Settings(USE_FAKE_QWEN=True))
+
+    transcript = asyncio.run(client.transcribe_audio("anything.webm"))
+
+    assert transcript == "我想吃中国菜"
+
+
 def test_real_mode_missing_api_key_raises_useful_value_error() -> None:
     """Real mode validates required Qwen settings before network calls."""
     client = QwenClient(
@@ -137,6 +147,109 @@ def test_generate_tutor_turn_real_mode_missing_api_key_raises_value_error() -> N
                 level="HSK1 beginner",
             )
         )
+
+
+def test_real_asr_missing_model_raises_useful_value_error() -> None:
+    """Real ASR mode validates model config before any API call."""
+    client = QwenClient(
+        settings=Settings(
+            USE_FAKE_QWEN=False,
+            QWEN_API_KEY="test-key",
+            QWEN_BASE_URL="https://example.com/compatible-mode/v1",
+            QWEN_ASR_MODEL="",
+        )
+    )
+
+    with pytest.raises(ValueError, match="Missing: QWEN_ASR_MODEL"):
+        asyncio.run(client.transcribe_audio("anything.webm"))
+
+
+def test_real_asr_success_with_mocked_text_response(tmp_path) -> None:
+    """Real ASR returns transcript text from a mocked SDK response."""
+    audio_path = tmp_path / "sample.webm"
+    audio_path.write_bytes(b"fake audio")
+    client = QwenClient(
+        settings=Settings(
+            USE_FAKE_QWEN=False,
+            QWEN_API_KEY="test-key",
+            QWEN_BASE_URL="https://example.com/compatible-mode/v1",
+            QWEN_ASR_MODEL="qwen-asr-test",
+        )
+    )
+    mock_qwen = Mock()
+    mock_qwen.audio.transcriptions.create = AsyncMock(
+        return_value=Mock(text=" 我想吃中国菜 ")
+    )
+    client._asr_client = Mock(return_value=mock_qwen)
+
+    transcript = asyncio.run(client.transcribe_audio(str(audio_path)))
+
+    assert transcript == "我想吃中国菜"
+
+
+def test_asr_dict_like_response_extracts_text() -> None:
+    """ASR transcript extraction also supports dict-like responses."""
+    assert _extract_asr_transcript({"text": " 我想吃中国菜 "}) == "我想吃中国菜"
+
+
+def test_asr_empty_transcript_raises_useful_error() -> None:
+    """Empty ASR transcripts fail clearly before downstream Qwen calls."""
+    with pytest.raises(ValueError, match="transcript was empty"):
+        _extract_asr_transcript(Mock(text="   "))
+
+
+def test_asr_malformed_response_raises_useful_error() -> None:
+    """Malformed ASR responses fail with a clear transcript-shape error."""
+    with pytest.raises(ValueError, match="did not include transcript text"):
+        _extract_asr_transcript(Mock(text=None))
+
+
+def test_asr_openai_error_becomes_value_error(tmp_path) -> None:
+    """ASR OpenAIError is converted into a useful ValueError."""
+    audio_path = tmp_path / "sample.webm"
+    audio_path.write_bytes(b"fake audio")
+    client = QwenClient(
+        settings=Settings(
+            USE_FAKE_QWEN=False,
+            QWEN_API_KEY="test-key",
+            QWEN_BASE_URL="https://example.com/compatible-mode/v1",
+            QWEN_ASR_MODEL="qwen-asr-test",
+        )
+    )
+    mock_qwen = Mock()
+    mock_qwen.audio.transcriptions.create = AsyncMock(
+        side_effect=APIConnectionError(request=Mock())
+    )
+    client._asr_client = Mock(return_value=mock_qwen)
+
+    with pytest.raises(ValueError, match="Qwen ASR request failed."):
+        asyncio.run(client.transcribe_audio(str(audio_path)))
+
+
+def test_asr_timeout_error_has_specific_message(tmp_path) -> None:
+    """ASR timeout reports the configured timeout and model."""
+    audio_path = tmp_path / "sample.webm"
+    audio_path.write_bytes(b"fake audio")
+    client = QwenClient(
+        settings=Settings(
+            USE_FAKE_QWEN=False,
+            QWEN_API_KEY="test-key",
+            QWEN_BASE_URL="https://example.com/compatible-mode/v1",
+            QWEN_ASR_MODEL="qwen-asr-test",
+            QWEN_ASR_REQUEST_TIMEOUT_SECONDS=12,
+        )
+    )
+    mock_qwen = Mock()
+    mock_qwen.audio.transcriptions.create = AsyncMock(
+        side_effect=APITimeoutError(request=Mock())
+    )
+    client._asr_client = Mock(return_value=mock_qwen)
+
+    with pytest.raises(
+        ValueError,
+        match="Qwen ASR request timed out after 12 seconds using model qwen-asr-test.",
+    ):
+        asyncio.run(client.transcribe_audio(str(audio_path)))
 
 
 def test_tutor_reply_openai_error_becomes_value_error() -> None:

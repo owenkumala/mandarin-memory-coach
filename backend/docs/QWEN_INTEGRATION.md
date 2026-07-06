@@ -17,6 +17,11 @@ USE_FAKE_QWEN=false
 QWEN_API_KEY=...
 QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 QWEN_CHAT_MODEL=qwen-plus
+QWEN_ASR_BASE_URL=
+QWEN_ASR_MODEL=
+QWEN_ASR_LANGUAGE=zh
+QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
+QWEN_ASR_MAX_RETRIES=0
 QWEN_REQUEST_TIMEOUT_SECONDS=30
 QWEN_MAX_TURN_TOKENS=500
 QWEN_MAX_TUTOR_TOKENS=180
@@ -43,17 +48,26 @@ For live demos, keep `QWEN_MAX_RETRIES=0` so failed Qwen requests fail fast
 instead of waiting through multiple SDK retries. A `QWEN_REQUEST_TIMEOUT_SECONDS`
 value of `25` or `30` is usually better for demo UX than a long timeout.
 
-## What is real in this first Qwen commit
+ASR is configured separately with `QWEN_ASR_MODEL`. If `QWEN_ASR_BASE_URL` is
+empty, the backend uses `QWEN_BASE_URL` for ASR too. Keep
+`QWEN_ASR_MAX_RETRIES=0` for demos so a failed transcription does not wait
+through SDK retries. Do not hardcode or commit a real ASR model unless it is
+confirmed for the Alibaba Cloud account being used.
+
+## What is real
 
 - `generate_tutor_turn()` calls Qwen once for both tutor reply and structured
   feedback when `USE_FAKE_QWEN=false`.
 - The separate `generate_tutor_reply()` and `analyze_mistakes()` methods remain
   available for focused tests and future use.
 - Structured feedback is validated into the existing `AnalysisResponse` schema.
+- `transcribe_audio()` calls Qwen ASR when `USE_FAKE_QWEN=false` and ASR
+  settings are configured.
 
-ASR and TTS are still intentionally fake:
+Fake mode and TTS behavior:
 
-- `transcribe_audio()` still returns the MVP transcript `我想吃中国菜`.
+- `transcribe_audio()` still returns the MVP transcript `我想吃中国菜` when
+  `USE_FAKE_QWEN=true`.
 - `synthesize_speech()` still returns `None`.
 
 ## Manual verification
@@ -70,10 +84,31 @@ POST a valid short `.m4a`, `.webm`, `.wav`, or `.mp3` file to
 and level `HSK1 beginner`. A 1-3 second file is best for demo testing because
 the backend still reads and saves the upload.
 
+You can use Swagger at:
+
+```text
+http://localhost:8000/docs
+```
+
+Or run curl with a short Mandarin sample:
+
+```bash
+time curl -s -X POST http://localhost:8000/api/v1/voice-chat \
+  -F "audio=@sample-mandarin.m4a;type=audio/mp4" \
+  -F "user_id=demo-user-asr-test" \
+  -F "scenario=restaurant ordering" \
+  -F "level=HSK1 beginner"
+```
+
 Expected response:
 
-- `transcript` remains fake: `我想吃中国菜`
+- `transcript` reflects the uploaded speech when real ASR is configured, rather
+  than always returning `我想吃中国菜`
 - `tutor_reply` comes from real Qwen
 - `feedback` comes from real Qwen structured JSON
 - memory, session, and lesson-plan rows still update
 - `tutor_audio_url` remains `null`
+
+If ASR model or endpoint support differs for your Alibaba Cloud workspace, keep
+the backend settings isolated and confirm the correct OpenAI-compatible ASR
+model before the live demo.

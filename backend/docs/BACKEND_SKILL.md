@@ -20,7 +20,8 @@ practice to those memories.
 The demo loop is:
 
 1. Learner speaks Mandarin through `/api/v1/voice-chat`.
-2. The backend transcribes speech. ASR is currently fake and returns `我想吃中国菜`.
+2. The backend transcribes speech. ASR is fake in `USE_FAKE_QWEN=true` and
+   real Qwen ASR in `USE_FAKE_QWEN=false` when ASR settings are configured.
 3. Qwen generates a short tutor reply and structured feedback JSON.
 4. The backend saves the session, mistakes, and active weaknesses.
 5. The next session retrieves memory and adapts the lesson.
@@ -70,7 +71,8 @@ implemented yet.
 - The local code uses a combined Qwen turn call for lower latency: one Qwen
   request returns both `tutor_reply` and `feedback`.
 - Fake mode remains available for tests and development.
-- ASR remains fake; `transcribe_audio()` returns `我想吃中国菜`.
+- ASR calls Qwen in real mode when ASR settings are configured.
+- Fake mode remains available; `transcribe_audio()` returns `我想吃中国菜`.
 - TTS remains fake; `synthesize_speech()` returns `None`.
 
 ### Recommended model settings
@@ -95,6 +97,11 @@ USE_FAKE_QWEN=true
 QWEN_API_KEY=
 QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 QWEN_CHAT_MODEL=qwen-plus
+QWEN_ASR_BASE_URL=
+QWEN_ASR_MODEL=
+QWEN_ASR_LANGUAGE=zh
+QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
+QWEN_ASR_MAX_RETRIES=0
 QWEN_REQUEST_TIMEOUT_SECONDS=30
 QWEN_MAX_RETRIES=0
 QWEN_MAX_TURN_TOKENS=500
@@ -135,7 +142,8 @@ time curl -s -X POST http://localhost:8000/api/v1/voice-chat \
 
 Expected:
 
-- `transcript`: `我想吃中国菜`
+- real audio transcript from Qwen ASR when real mode and ASR settings are enabled
+- fake transcript `我想吃中国菜` when fake mode is enabled
 - tutor reply from Qwen when real mode is enabled
 - feedback JSON from Qwen when real mode is enabled
 - memory updates

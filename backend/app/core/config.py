@@ -22,7 +22,11 @@ class Settings(BaseSettings):
     QWEN_API_KEY: str = ""
     QWEN_BASE_URL: str = ""
     QWEN_CHAT_MODEL: str = ""
+    QWEN_ASR_BASE_URL: str = ""
     QWEN_ASR_MODEL: str = ""
+    QWEN_ASR_LANGUAGE: str = "zh"
+    QWEN_ASR_REQUEST_TIMEOUT_SECONDS: float = 30.0
+    QWEN_ASR_MAX_RETRIES: int = 0
     QWEN_TTS_MODEL: str = ""
     QWEN_REQUEST_TIMEOUT_SECONDS: float = 45.0
     QWEN_MAX_TUTOR_TOKENS: int = 180

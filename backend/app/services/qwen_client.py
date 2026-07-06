@@ -7,6 +7,7 @@ interface while fake mode makes the memory pipeline testable without secrets.
 import json
 import logging
 import time
+from collections.abc import Mapping
 from textwrap import dedent
 
 from openai import APITimeoutError, AsyncOpenAI, OpenAIError
@@ -56,8 +57,40 @@ class QwenClient:
         self.settings = settings
 
     async def transcribe_audio(self, audio_path: str) -> str:
-        """Return a fake transcript until real ASR is integrated later."""
-        return "我想吃中国菜"
+        """Transcribe learner audio through fake mode or real Qwen ASR."""
+        if self.settings.USE_FAKE_QWEN:
+            return "我想吃中国菜"
+
+        client = self._asr_client()
+        started_at = time.perf_counter()
+        try:
+            with open(audio_path, "rb") as audio_file:
+                request_params: dict[str, object] = {
+                    "model": self.settings.QWEN_ASR_MODEL,
+                    "file": audio_file,
+                }
+                if self.settings.QWEN_ASR_LANGUAGE.strip():
+                    request_params["language"] = self.settings.QWEN_ASR_LANGUAGE
+
+                # Keep the ASR call isolated here so endpoint and memory behavior
+                # stay unchanged while real transcription replaces the fake text.
+                response = await client.audio.transcriptions.create(**request_params)
+        except FileNotFoundError as exc:
+            raise ValueError("Audio file for Qwen ASR was not found.") from exc
+        except OSError as exc:
+            raise ValueError("Audio file for Qwen ASR could not be read.") from exc
+        except APITimeoutError as exc:
+            raise ValueError(_qwen_asr_timeout_message(self.settings)) from exc
+        except OpenAIError as exc:
+            raise ValueError("Qwen ASR request failed.") from exc
+        finally:
+            elapsed = time.perf_counter() - started_at
+            logger.info(
+                "qwen.asr_seconds=%.2f model=%s",
+                elapsed,
+                self.settings.QWEN_ASR_MODEL,
+            )
+        return _extract_asr_transcript(response)
 
     async def generate_tutor_reply(
         self,
@@ -236,6 +269,35 @@ class QwenClient:
             max_retries=self.settings.QWEN_MAX_RETRIES,
         )
 
+    def _asr_client(self) -> AsyncOpenAI:
+        """Validate ASR settings and return an OpenAI-compatible ASR client."""
+        asr_base_url = (
+            self.settings.QWEN_ASR_BASE_URL.strip()
+            or self.settings.QWEN_BASE_URL.strip()
+        )
+        missing_settings = [
+            name
+            for name, value in (
+                ("QWEN_API_KEY", self.settings.QWEN_API_KEY),
+                ("QWEN_ASR_MODEL", self.settings.QWEN_ASR_MODEL),
+                ("QWEN_BASE_URL or QWEN_ASR_BASE_URL", asr_base_url),
+            )
+            if not value.strip()
+        ]
+        if missing_settings:
+            missing = ", ".join(missing_settings)
+            raise ValueError(
+                "Qwen ASR real mode requires QWEN_API_KEY, QWEN_ASR_MODEL, "
+                "and QWEN_BASE_URL or QWEN_ASR_BASE_URL. "
+                f"Missing: {missing}."
+            )
+        return AsyncOpenAI(
+            api_key=self.settings.QWEN_API_KEY,
+            base_url=asr_base_url,
+            timeout=self.settings.QWEN_ASR_REQUEST_TIMEOUT_SECONDS,
+            max_retries=self.settings.QWEN_ASR_MAX_RETRIES,
+        )
+
 
 def _tutor_system_prompt() -> str:
     """Return the system prompt for spoken Mandarin tutoring."""
@@ -253,6 +315,15 @@ def _qwen_timeout_message(operation: str, settings: Settings) -> str:
     return (
         f"Qwen {operation} request timed out after "
         f"{settings.QWEN_REQUEST_TIMEOUT_SECONDS:.0f} seconds."
+    )
+
+
+def _qwen_asr_timeout_message(settings: Settings) -> str:
+    """Return a clear ASR timeout message without exposing credentials."""
+    return (
+        "Qwen ASR request timed out after "
+        f"{settings.QWEN_ASR_REQUEST_TIMEOUT_SECONDS:.0f} seconds using model "
+        f"{settings.QWEN_ASR_MODEL}."
     )
 
 
@@ -434,6 +505,24 @@ def _extract_chat_content(response: object) -> str:
     if not isinstance(content, str) or not content.strip():
         raise ValueError("Qwen response content was empty.")
     return content.strip()
+
+
+def _extract_asr_transcript(response: object) -> str:
+    """Extract transcript text from an OpenAI-compatible ASR response."""
+    text = getattr(response, "text", None)
+    if text is None and isinstance(response, Mapping):
+        text = response.get("text")
+    if text is None:
+        try:
+            text = response["text"]  # type: ignore[index]
+        except (KeyError, TypeError):
+            text = None
+    if not isinstance(text, str):
+        raise ValueError("Qwen ASR response did not include transcript text.")
+    transcript = text.strip()
+    if not transcript:
+        raise ValueError("Qwen ASR response transcript was empty.")
+    return transcript
 
 
 def strip_json_code_fence(content: str) -> str:
