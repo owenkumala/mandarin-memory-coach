@@ -1,0 +1,15 @@
+.venv/
+venv/
+.env
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
+__MACOSX/
+*.db
+storage/*
+!storage/.gitkeep
+!storage/user_audio/
+!storage/user_audio/.gitkeep
+!storage/tutor_audio/
+!storage/tutor_audio/.gitkeep
