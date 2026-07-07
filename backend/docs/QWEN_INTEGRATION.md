@@ -15,6 +15,7 @@ Create or update `backend/.env` with:
 ```text
 USE_FAKE_QWEN=false
 USE_FAKE_ASR=true
+USE_FAKE_TTS=true
 QWEN_API_KEY=...
 DASHSCOPE_API_KEY=
 QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
@@ -43,6 +44,10 @@ S3_PREFIX=speechan/audio/
 S3_SIGNED_URL_EXPIRES_SECONDS=900
 QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
 QWEN_ASR_MAX_RETRIES=0
+QWEN_TTS_MODEL=cosyvoice-v3-plus
+QWEN_TTS_VOICE=longanyang
+QWEN_TTS_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference
+QWEN_TTS_OUTPUT_FORMAT=mp3
 QWEN_REQUEST_TIMEOUT_SECONDS=30
 QWEN_MAX_TURN_TOKENS=500
 QWEN_MAX_TUTOR_TOKENS=180
@@ -117,6 +122,94 @@ strings can contain signature data.
 `qwen3-asr-flash-realtime` is a WebSocket streaming model and is not implemented
 yet. This backend currently implements upload-style ASR with `qwen3-asr-flash`.
 
+TTS is optional and configured separately with `USE_FAKE_TTS`. When
+`USE_FAKE_TTS=true`, the backend keeps returning `tutor_audio_url=null` and the
+frontend should use browser Web Speech API playback as the fallback. When
+`USE_FAKE_TTS=false`, `synthesize_speech()` uses the Alibaba DashScope SDK
+`dashscope.audio.tts_v2.SpeechSynthesizer` official non-streaming CosyVoice
+flow and writes the returned audio bytes to `backend/storage/tutor_audio/`.
+
+For TTS, set:
+
+```text
+USE_FAKE_TTS=false
+QWEN_TTS_MODEL=cosyvoice-v3-plus
+QWEN_TTS_VOICE=longanyang
+QWEN_TTS_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference
+QWEN_TTS_OUTPUT_FORMAT=mp3
+```
+
+`DASHSCOPE_API_KEY` is used first for TTS, then `QWEN_API_KEY`. Do not commit
+real keys. If Qwen/DashScope TTS setup fails during demo prep, keep
+`USE_FAKE_TTS=true` and rely on browser TTS in the frontend.
+
+`QWEN_TTS_BASE_URL` may be blank or a websocket URL. For Qwen Cloud
+international CosyVoice TTS, use:
+
+```text
+QWEN_TTS_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference
+```
+
+Do not use `https://dashscope-intl.aliyuncs.com/api/v1` for TTS; that URL is
+for DashScope native HTTP-style APIs such as upload ASR, while CosyVoice TTS
+uses WSS/WebSocket internally.
+
+If DashScope TTS fails with a local WebSocket/certificate error such as
+`SSL: CERTIFICATE_VERIFY_FAILED`, the `/voice-chat` endpoint keeps returning the
+text tutor reply and sets `tutor_audio_url=null`. This preserves the demo loop;
+the frontend should use browser TTS as the fallback while local certificate or
+DashScope websocket setup is fixed.
+
+## Qwen TTS certificate setup
+
+CosyVoice TTS uses WSS/WebSocket internally. On macOS framework Python installs,
+the WebSocket TLS handshake can fail even when the Qwen key and model are
+correct. Do not disable SSL verification, and do not set `cert_reqs` to
+`ssl.CERT_NONE`.
+
+The backend now auto-configures Python SSL certificate environment variables
+at app startup. If `SSL_CERT_FILE` or `REQUESTS_CA_BUNDLE` are missing, it sets
+them for the current Python process to `certifi.where()` before routes or
+Qwen/DashScope clients are used. Existing user-provided values are never
+overwritten.
+
+Manual exports are only needed when you want explicit shell-level configuration
+or when debugging outside the FastAPI process. For manual shell setup, install
+or refresh `certifi`, then point Python clients at its CA bundle:
+
+```bash
+python3 -m pip install --upgrade certifi
+export SSL_CERT_FILE="$(python3 -c 'import certifi; print(certifi.where())')"
+export REQUESTS_CA_BUNDLE="$SSL_CERT_FILE"
+```
+
+For macOS framework Python, the Apple-style certificate installer may also help:
+
+```bash
+open "/Applications/Python 3.14/Install Certificates.command"
+```
+
+Use the matching Python version in that path if your local Python is not 3.14.
+To make the shell-level certifi fix permanent, manually add the two `export`
+lines above to `~/.zshrc`.
+
+On Linux or Alibaba Cloud deployment targets, ensure the system CA bundle is
+installed and up to date, for example with the distro `ca-certificates` package.
+
+Two manual diagnostics are available:
+
+```bash
+cd backend
+python3 scripts/check_python_certs.py
+python3 scripts/check_qwen_tts.py
+```
+
+`check_python_certs.py` treats a DashScope 401 `InvalidApiKey` or
+`No API-key provided` response as a good connectivity result because it means
+TLS and network access reached DashScope. The TTS script prints whether keys are
+configured, but never prints key values. Both scripts also call the same
+automatic certifi configuration helper before running diagnostics.
+
 ## What is real
 
 - `generate_tutor_turn()` calls Qwen once for both tutor reply and structured
@@ -131,7 +224,9 @@ Fake mode and TTS behavior:
 
 - `transcribe_audio()` still returns the MVP transcript `我想吃中国菜` when either
   `USE_FAKE_QWEN=true` or `USE_FAKE_ASR=true`.
-- `synthesize_speech()` still returns `None`.
+- `synthesize_speech()` returns `None` when `USE_FAKE_TTS=true`.
+- `synthesize_speech()` saves tutor audio and returns a local path when
+  `USE_FAKE_TTS=false` and TTS settings are configured.
 
 ## Manual verification
 
@@ -187,7 +282,9 @@ Expected response:
 - `tutor_reply` comes from real Qwen
 - `feedback` comes from real Qwen structured JSON
 - memory, session, and lesson-plan rows still update
-- `tutor_audio_url` remains `null`
+- `tutor_audio_url` is `null` when `USE_FAKE_TTS=true`
+- `tutor_audio_url` points to `/storage/tutor_audio/...` when
+  `USE_FAKE_TTS=false` and DashScope TTS succeeds
 
 If `QWEN_ASR_AUDIO_REF_MODE=oss_url`, the backend uploads the audio to OSS and
 uses either `ALIBABA_OSS_PUBLIC_BASE_URL + object_key` or a signed URL from

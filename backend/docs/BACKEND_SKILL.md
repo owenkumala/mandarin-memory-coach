@@ -64,8 +64,8 @@ up first."
 
 The `/voice-chat` response includes the fake transcript, Qwen tutor reply,
 optional tutor audio URL, structured feedback, memory before and after, and a
-`memory_updated` flag. `tutor_audio_url` is currently `null` because TTS is not
-implemented yet.
+`memory_updated` flag. `tutor_audio_url` is `null` when fake TTS is enabled and
+points to stored tutor audio when optional Qwen/DashScope TTS is configured.
 
 ### Current Qwen status
 
@@ -77,7 +77,12 @@ implemented yet.
 - ASR calls DashScope native Qwen ASR in real mode when ASR settings are
   configured.
 - Fake ASR remains available; `transcribe_audio()` returns `我想吃中国菜`.
-- TTS remains fake; `synthesize_speech()` returns `None`.
+- TTS is optional. `synthesize_speech()` returns `None` when
+  `USE_FAKE_TTS=true`, and can call DashScope CosyVoice TTS v2 when
+  `USE_FAKE_TTS=false`.
+- The backend auto-configures `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` to
+  `certifi.where()` for the current Python process when those env vars are
+  missing, so Qwen CosyVoice WSS can work without manual exports.
 
 ### Recommended model settings
 
@@ -99,6 +104,7 @@ Use placeholders only; never commit real secrets.
 ```env
 USE_FAKE_QWEN=true
 USE_FAKE_ASR=true
+USE_FAKE_TTS=true
 QWEN_API_KEY=
 DASHSCOPE_API_KEY=
 QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
@@ -111,6 +117,10 @@ QWEN_ASR_ENABLE_ITN=false
 QWEN_ASR_AUDIO_REF_MODE=s3_url
 QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
 QWEN_ASR_MAX_RETRIES=0
+QWEN_TTS_MODEL=cosyvoice-v3-plus
+QWEN_TTS_VOICE=longanyang
+QWEN_TTS_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference
+QWEN_TTS_OUTPUT_FORMAT=mp3
 QWEN_REQUEST_TIMEOUT_SECONDS=30
 QWEN_MAX_RETRIES=0
 QWEN_MAX_TURN_TOKENS=500
@@ -172,7 +182,8 @@ Expected:
 - tutor reply from Qwen when real mode is enabled
 - feedback JSON from Qwen when real mode is enabled
 - memory updates
-- `tutor_audio_url=null`
+- `tutor_audio_url=null` when `USE_FAKE_TTS=true`
+- `tutor_audio_url=/storage/tutor_audio/...` when optional TTS is configured
 
 ### Testing
 

@@ -7,6 +7,8 @@ final response assembly.
 
 import logging
 import time
+from pathlib import Path
+from uuid import uuid4
 
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
@@ -144,16 +146,51 @@ async def _generate_tutor_audio_url(
     tutor_reply: str,
     user_id: str,
 ) -> str | None:
-    """Run fake/future TTS and convert a generated file path to a storage URL."""
+    """Run optional TTS and convert a generated file path to a storage URL."""
     settings = get_settings()
-    tutor_audio_path = build_audio_file_path(settings.TUTOR_AUDIO_DIR, user_id, "reply.mp3")
-    synthesized_path = await qwen_client.synthesize_speech(
-        tutor_reply,
-        str(tutor_audio_path),
+    tutor_audio_path = _build_tutor_audio_path(
+        settings.TUTOR_AUDIO_DIR,
+        user_id,
+        settings.QWEN_TTS_OUTPUT_FORMAT,
     )
+    try:
+        synthesized_path = await qwen_client.synthesize_speech(
+            tutor_reply,
+            str(tutor_audio_path),
+        )
+    except ValueError as exc:
+        logger.warning("voice_chat.tts_fallback reason=%s", exc)
+        return None
     if synthesized_path is None:
         return None
     return storage_url(synthesized_path, settings.STORAGE_DIR)
+
+
+def _build_tutor_audio_path(
+    tutor_audio_dir: str,
+    user_id: str,
+    output_format: str,
+) -> Path:
+    """Return a user-scoped tutor audio path with a strong unique filename."""
+    safe_user_id = _safe_path_segment(user_id)
+    extension = _tutor_audio_extension(output_format)
+    return Path(tutor_audio_dir) / safe_user_id / f"reply-{uuid4().hex}.{extension}"
+
+
+def _safe_path_segment(value: str) -> str:
+    """Normalize user-provided path segments for local storage paths."""
+    safe_value = "".join(
+        character for character in value if character.isalnum() or character in "-_"
+    )
+    return safe_value or "user"
+
+
+def _tutor_audio_extension(output_format: str) -> str:
+    """Return the tutor audio extension used for the saved response file."""
+    normalized_format = output_format.strip().lower() or "mp3"
+    if normalized_format == "wav":
+        return "wav"
+    return "mp3"
 
 
 def _log_elapsed(metric_name: str, started_at: float) -> None:

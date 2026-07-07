@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     S3_SIGNED_URL_EXPIRES_SECONDS: int = 900
     USE_FAKE_QWEN: bool = True
     USE_FAKE_ASR: bool = True
+    USE_FAKE_TTS: bool = True
     QWEN_API_KEY: str = ""
     DASHSCOPE_API_KEY: str = ""
     QWEN_BASE_URL: str = ""
@@ -49,6 +50,11 @@ class Settings(BaseSettings):
     QWEN_ASR_REQUEST_TIMEOUT_SECONDS: float = 30.0
     QWEN_ASR_MAX_RETRIES: int = 0
     QWEN_TTS_MODEL: str = ""
+    QWEN_TTS_VOICE: str = ""
+    QWEN_TTS_BASE_URL: str = ""
+    QWEN_TTS_OUTPUT_FORMAT: str = "mp3"
+    SSL_CERT_FILE: str = ""
+    REQUESTS_CA_BUNDLE: str = ""
     QWEN_REQUEST_TIMEOUT_SECONDS: float = 30.0
     QWEN_MAX_TUTOR_TOKENS: int = 180
     QWEN_MAX_ANALYSIS_TOKENS: int = 650
