@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { AudioRecorderPanel } from "./AudioRecorderPanel";
 import { VoiceChatResult } from "./VoiceChatResult";
+import { getMascotMood, XiaoYaMascot } from "./XiaoYaMascot";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { ErrorMessage } from "@/components/ui/ErrorMessage";
@@ -24,6 +25,11 @@ export function PracticeShell() {
   const recorder = useAudioRecorder();
   const voiceChat = useVoiceChat();
   const { isSupported, speak, stop } = useTutorSpeech();
+  const mascotMood = getMascotMood({
+    hasMemoryUpdate: Boolean(voiceChat.data?.memory_updated),
+    isUploading: voiceChat.isUploading,
+    recordingState: recorder.recordingState,
+  });
 
   useEffect(() => {
     if (voiceChat.data?.tutor_reply) {
@@ -54,20 +60,31 @@ export function PracticeShell() {
 
   return (
     <div className="grid gap-6">
-      <div className="grid gap-4 lg:grid-cols-[1.05fr_0.95fr] lg:items-end">
-        <div>
-          <p className="text-sm font-semibold uppercase tracking-wide text-jade">
-            Mandarin memory coach
+      <div className="grid gap-5 lg:grid-cols-2 lg:items-end">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold uppercase text-jade">
+            SpeakHan memory coach
           </p>
-          <h1 className="mt-2 max-w-3xl text-4xl font-semibold leading-tight text-ink">
-            Record Mandarin, get Qwen feedback, and show memory changing live.
+          <h1 className="mt-2 text-4xl font-semibold leading-tight text-ink">
+            Xiao Ya listens, coaches, and remembers what changes.
           </h1>
           <p className="mt-4 max-w-2xl text-base leading-7 text-ink/65">
-            Use the same user ID twice to prove the coach remembers recurring mistakes.
+            Record twice with the same learner ID to make recurring Mandarin patterns visible.
           </p>
+          <div aria-live="polite" className="mt-5">
+            <XiaoYaMascot mood={mascotMood} />
+          </div>
         </div>
-        <Card>
+        <Card className="min-w-0 border-jade/15">
           <form className="grid gap-3" onSubmit={handleSettingsSubmit}>
+            <div>
+              <p className="text-xs font-semibold uppercase text-ink/45">
+                Demo learner
+              </p>
+              <p className="mt-1 text-sm text-ink/65">
+                Memory continuity depends on this same user ID across sessions.
+              </p>
+            </div>
             <label className="grid gap-2 text-sm font-medium text-ink">
               User ID
               <input
@@ -95,13 +112,13 @@ export function PracticeShell() {
               </label>
             </div>
             <Button disabled={!recorder.audioBlob || voiceChat.isUploading} type="submit">
-              Send current audio
+              {voiceChat.isUploading ? "Analyzing audio..." : "Analyze current audio"}
             </Button>
           </form>
         </Card>
       </div>
 
-      <Card>
+      <Card className="border-jade/15">
         <h2 className="mb-4 text-xl font-semibold text-ink">Practice controls</h2>
         <AudioRecorderPanel
           audioBlob={recorder.audioBlob}
@@ -125,7 +142,9 @@ export function PracticeShell() {
       </Card>
 
       {voiceChat.error ? <ErrorMessage message={voiceChat.error} /> : null}
-      {voiceChat.isUploading ? <LoadingState label="Uploading audio and waiting for Qwen..." /> : null}
+      {voiceChat.isUploading ? (
+        <LoadingState label="Uploading audio and waiting for Qwen..." />
+      ) : null}
 
       {voiceChat.data ? (
         <VoiceChatResult

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-labelledby="title desc">
+  <title id="title">Memory pearl</title>
+  <desc id="desc">A jade green pearl representing learner memory updates.</desc>
+  <defs>
+    <radialGradient id="pearl" cx="0" cy="0" r="1" gradientTransform="matrix(44 0 0 44 48 38)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff"/>
+      <stop offset=".45" stop-color="#b8f5df"/>
+      <stop offset="1" stop-color="#147d64"/>
+    </radialGradient>
+  </defs>
+  <circle cx="60" cy="60" r="48" fill="#f8faf7"/>
+  <circle cx="60" cy="60" r="36" fill="url(#pearl)" stroke="#11624f" stroke-width="4"/>
+  <path d="M42 45c10-12 28-14 40-4" fill="none" stroke="#fff" stroke-linecap="round" stroke-width="7"/>
+  <path d="M35 80c11 11 39 15 55-2" fill="none" stroke="#d97706" stroke-linecap="round" stroke-width="5"/>
+</svg>

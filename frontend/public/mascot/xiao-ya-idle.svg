@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-labelledby="title desc">
+  <title id="title">Xiao Ya idle duck mascot</title>
+  <desc id="desc">A friendly yellow duck mascot wearing a jade vest and holding a small memory pearl.</desc>
+  <defs>
+    <linearGradient id="body" x1="62" x2="182" y1="44" y2="202" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff2a8"/>
+      <stop offset="1" stop-color="#f6c653"/>
+    </linearGradient>
+    <linearGradient id="pearl" x1="148" x2="188" y1="82" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f7fffb"/>
+      <stop offset="1" stop-color="#9be7cf"/>
+    </linearGradient>
+  </defs>
+  <circle cx="120" cy="120" r="102" fill="#f8faf7"/>
+  <path d="M68 134c-20-4-34-17-35-34 19 0 34 7 45 21l-10 13Z" fill="#f2b84b"/>
+  <path d="M172 134c20-4 34-17 35-34-19 0-34 7-45 21l10 13Z" fill="#f2b84b"/>
+  <path d="M58 139c0-48 27-85 62-85s62 37 62 85c0 39-22 61-62 61s-62-22-62-61Z" fill="url(#body)" stroke="#8a5f16" stroke-width="4"/>
+  <path d="M77 136c13 16 72 16 86 0v34c-16 15-70 15-86 0v-34Z" fill="#147d64"/>
+  <path d="M90 139c8 7 52 7 60 0v25c-10 8-50 8-60 0v-25Z" fill="#f8faf7" opacity=".22"/>
+  <path d="M88 117c8 13 56 13 64 0" fill="none" stroke="#c42d2d" stroke-linecap="round" stroke-width="5"/>
+  <ellipse cx="96" cy="98" rx="8" ry="10" fill="#172126"/>
+  <ellipse cx="144" cy="98" rx="8" ry="10" fill="#172126"/>
+  <circle cx="99" cy="94" r="2.6" fill="#fff"/>
+  <circle cx="147" cy="94" r="2.6" fill="#fff"/>
+  <path d="M109 112c7 8 15 8 22 0-5 19-17 19-22 0Z" fill="#e96b35" stroke="#8a3f20" stroke-linejoin="round" stroke-width="3"/>
+  <path d="M91 57c8-17 52-17 59 0-15 6-44 6-59 0Z" fill="#c42d2d"/>
+  <path d="M97 51c12-9 34-9 46 0" fill="none" stroke="#f7cf60" stroke-linecap="round" stroke-width="5"/>
+  <circle cx="168" cy="104" r="19" fill="url(#pearl)" stroke="#147d64" stroke-width="3"/>
+  <path d="M160 98c6-7 15-8 21-2" fill="none" stroke="#fff" stroke-linecap="round" stroke-width="4"/>
+  <path d="M65 194c13 12 29 18 55 18s42-6 55-18" fill="none" stroke="#d97706" stroke-linecap="round" stroke-width="7"/>
+</svg>

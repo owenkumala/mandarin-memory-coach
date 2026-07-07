@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-labelledby="title desc">
+  <title id="title">Xiao Ya celebrating duck mascot</title>
+  <desc id="desc">A cheerful yellow duck mascot celebrating a successful memory update with confetti and a pearl.</desc>
+  <defs>
+    <linearGradient id="body" x1="62" x2="182" y1="44" y2="202" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff2a8"/>
+      <stop offset="1" stop-color="#f6c653"/>
+    </linearGradient>
+    <linearGradient id="pearl" x1="160" x2="200" y1="42" y2="88" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff"/>
+      <stop offset="1" stop-color="#9be7cf"/>
+    </linearGradient>
+  </defs>
+  <circle cx="120" cy="120" r="102" fill="#f8faf7"/>
+  <path d="M47 58l12 7-12 7-12-7 12-7Z" fill="#c42d2d"/>
+  <path d="M195 138l12 7-12 7-12-7 12-7Z" fill="#147d64"/>
+  <path d="M181 48l8 15" stroke="#d97706" stroke-linecap="round" stroke-width="5"/>
+  <path d="M69 96c-22-16-30-36-22-51 17 12 27 28 29 48l-7 3Z" fill="#f2b84b" stroke="#8a5f16" stroke-width="3"/>
+  <path d="M171 96c22-16 30-36 22-51-17 12-27 28-29 48l7 3Z" fill="#f2b84b" stroke="#8a5f16" stroke-width="3"/>
+  <path d="M58 139c0-48 27-85 62-85s62 37 62 85c0 39-22 61-62 61s-62-22-62-61Z" fill="url(#body)" stroke="#8a5f16" stroke-width="4"/>
+  <path d="M77 136c13 16 72 16 86 0v34c-16 15-70 15-86 0v-34Z" fill="#147d64"/>
+  <path d="M88 118c9 19 55 19 64 0" fill="none" stroke="#c42d2d" stroke-linecap="round" stroke-width="5"/>
+  <path d="M90 96c9-8 20-8 29 0" fill="none" stroke="#172126" stroke-linecap="round" stroke-width="5"/>
+  <path d="M121 96c9-8 20-8 29 0" fill="none" stroke="#172126" stroke-linecap="round" stroke-width="5"/>
+  <path d="M109 111c7 14 17 14 24 0-4 24-20 24-24 0Z" fill="#e96b35" stroke="#8a3f20" stroke-linejoin="round" stroke-width="3"/>
+  <path d="M91 57c8-17 52-17 59 0-15 6-44 6-59 0Z" fill="#c42d2d"/>
+  <path d="M97 51c12-9 34-9 46 0" fill="none" stroke="#f7cf60" stroke-linecap="round" stroke-width="5"/>
+  <circle cx="179" cy="65" r="19" fill="url(#pearl)" stroke="#147d64" stroke-width="3"/>
+  <path d="M171 60c6-7 15-8 21-2" fill="none" stroke="#fff" stroke-linecap="round" stroke-width="4"/>
+  <path d="M65 194c13 12 29 18 55 18s42-6 55-18" fill="none" stroke="#d97706" stroke-linecap="round" stroke-width="7"/>
+</svg>

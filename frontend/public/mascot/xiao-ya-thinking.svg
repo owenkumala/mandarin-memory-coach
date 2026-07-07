@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-labelledby="title desc">
+  <title id="title">Xiao Ya thinking duck mascot</title>
+  <desc id="desc">A friendly yellow duck mascot thinking with a jade memory pearl and small cloud motifs.</desc>
+  <defs>
+    <linearGradient id="body" x1="62" x2="182" y1="44" y2="202" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff2a8"/>
+      <stop offset="1" stop-color="#f6c653"/>
+    </linearGradient>
+    <radialGradient id="pearl" cx="0" cy="0" r="1" gradientTransform="matrix(25 0 0 25 173 73)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff"/>
+      <stop offset=".54" stop-color="#a7f3d0"/>
+      <stop offset="1" stop-color="#147d64"/>
+    </radialGradient>
+  </defs>
+  <circle cx="120" cy="120" r="102" fill="#f8faf7"/>
+  <path d="M53 87c5-9 16-9 21-2 6-12 24-10 26 4 11-2 19 6 17 16H48c-4-7-1-15 5-18Z" fill="#e9f7ef" stroke="#147d64" stroke-width="3"/>
+  <path d="M68 134c-20-4-34-17-35-34 19 0 34 7 45 21l-10 13Z" fill="#f2b84b"/>
+  <path d="M172 134c18 1 32-9 40-24-18-4-34 0-47 12l7 12Z" fill="#f2b84b"/>
+  <path d="M58 139c0-48 27-85 62-85s62 37 62 85c0 39-22 61-62 61s-62-22-62-61Z" fill="url(#body)" stroke="#8a5f16" stroke-width="4"/>
+  <path d="M77 136c13 16 72 16 86 0v34c-16 15-70 15-86 0v-34Z" fill="#147d64"/>
+  <ellipse cx="96" cy="100" rx="7" ry="5" fill="#172126"/>
+  <ellipse cx="144" cy="100" rx="7" ry="5" fill="#172126"/>
+  <path d="M109 116c8 5 16 5 24 0" fill="none" stroke="#8a3f20" stroke-linecap="round" stroke-width="4"/>
+  <path d="M88 119c9 10 55 10 64 0" fill="none" stroke="#c42d2d" stroke-linecap="round" stroke-width="5"/>
+  <path d="M91 57c8-17 52-17 59 0-15 6-44 6-59 0Z" fill="#c42d2d"/>
+  <path d="M99 51c12-8 32-8 44 0" fill="none" stroke="#f7cf60" stroke-linecap="round" stroke-width="5"/>
+  <circle cx="174" cy="73" r="19" fill="url(#pearl)" stroke="#147d64" stroke-width="3"/>
+  <circle cx="158" cy="86" r="6" fill="#9be7cf" stroke="#147d64" stroke-width="2"/>
+  <circle cx="147" cy="99" r="4" fill="#9be7cf" stroke="#147d64" stroke-width="2"/>
+  <path d="M65 194c13 12 29 18 55 18s42-6 55-18" fill="none" stroke="#d97706" stroke-linecap="round" stroke-width="7"/>
+</svg>
