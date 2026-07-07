@@ -113,11 +113,13 @@ def _event_details(event_type: str, payload: dict[str, Any]) -> str:
     if event_type == "tutor_sentence":
         return (
             f"sequence={payload.get('sequence', '')} "
+            f"{_source_detail(payload)}"
             f"text={_short_text(payload.get('text', ''))}"
         )
     if event_type == "audio_chunk_ready":
         return (
             f"sequence={payload.get('sequence', '')} "
+            f"{_source_detail(payload)}"
             f"audio_url={payload.get('audio_url', '')}"
         )
     if event_type in {"feedback_ready", "memory_updated", "done"}:
@@ -137,6 +139,14 @@ def _short_text(value: Any, max_length: int = 120) -> str:
     if len(text) <= max_length:
         return text
     return f"{text[: max_length - 3]}..."
+
+
+def _source_detail(payload: dict[str, Any]) -> str:
+    """Return source detail for fast-ack events when present."""
+    source = payload.get("source")
+    if not source:
+        return ""
+    return f"source={source} "
 
 
 async def run_diagnostic(args: argparse.Namespace) -> None:

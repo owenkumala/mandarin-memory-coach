@@ -311,10 +311,33 @@ TTS chunk tasks have completed or emitted warning errors.
 
 Realtime tutor text is prompted more strictly than the REST tutor response
 because it is fed directly into sentence-level TTS. The realtime prompt asks for
-2-4 short spoken sentences, mainly Mandarin, normal Chinese sentence endings,
+2-3 short spoken sentences, mainly Mandarin, normal Chinese sentence endings,
 no emoji, no markdown, no bullet points, no quote-heavy examples, and concise
 HSK-appropriate wording. HSK1-HSK3 replies should stay under about 120 Chinese
 characters; HSK4-HSK6 replies should stay under about 180.
+
+After `asr_final`, realtime mode may emit a cached fast acknowledgement as
+sequence `0`:
+
+```json
+{"type": "tutor_sentence", "payload": {"sequence": 0, "text": "我来帮你改一句。", "source": "fast_ack"}}
+{"type": "audio_chunk_ready", "payload": {"sequence": 0, "audio_url": "/storage/tutor_audio/_shared/realtime-fast-ack.mp3", "source": "fast_ack"}}
+```
+
+The frontend should play sequence `0` first if present. The model-generated
+tutor sentences still start at sequence `1`. If fake TTS is enabled or the fast
+acknowledgement TTS fails, sequence `0` is skipped and the normal sequence `1+`
+flow continues.
+
+The perceived realtime flow is:
+
+```text
+asr_final -> fast ack audio -> streamed correction text -> generated TTS chunks
+```
+
+This improves perceived latency after buffered ASR finalizes, but true 1-2
+second ChatGPT-like response still requires a later real streaming ASR
+implementation.
 
 Sentence-level TTS runs as tutor tokens arrive. The backend finalizes sentences
 on `。！？!?` or newline, starts `synthesize_speech()` for each sentence, saves
@@ -410,6 +433,8 @@ printing secrets or raw audio:
 0.00s session_started payload_keys=session_id,user_id,scenario,level,asr_mode
 0.08s audio_received total_bytes_received=12345
 3.80s asr_final transcript=我想点中国菜
+3.85s tutor_sentence sequence=0 source=fast_ack text=我来帮你改一句。
+3.90s audio_chunk_ready sequence=0 source=fast_ack audio_url=/storage/tutor_audio/_shared/realtime-fast-ack.mp3
 4.10s tutor_token text=很好
 4.40s tutor_sentence sequence=1 text=很好，你可以说：我想点一份中国菜。
 5.20s feedback_ready

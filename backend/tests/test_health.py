@@ -20,7 +20,7 @@ os.environ["USE_FAKE_TTS"] = "true"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.core.config import get_settings  # noqa: E402
+from app.core.config import Settings, get_settings  # noqa: E402
 from app.db.database import SessionLocal  # noqa: E402
 from app.db import models  # noqa: E402
 from app.main import app  # noqa: E402
@@ -38,6 +38,7 @@ from app.services.memory_service import (  # noqa: E402
     update_active_weaknesses,
 )
 from app.services.qwen_client import QwenClient  # noqa: E402
+from app.services import realtime_voice_service  # noqa: E402
 from app.services.sentence_tts_pipeline import (  # noqa: E402
     DEFAULT_REALTIME_TTS_MAX_CONCURRENCY,
     SentenceTtsPipeline,
@@ -93,6 +94,18 @@ async def _fake_realtime_transcribe_audio(self: QwenClient, audio_path: str) -> 
     """Return a deterministic transcript without calling live Qwen ASR."""
     assert Path(audio_path).exists()
     return "我想点菜"
+
+
+def _realtime_test_settings(use_fake_tts: bool, suffix: str) -> Settings:
+    """Return isolated storage settings for realtime WebSocket tests."""
+    return Settings(
+        USE_FAKE_QWEN=True,
+        USE_FAKE_TTS=use_fake_tts,
+        DATABASE_URL=os.environ["DATABASE_URL"],
+        STORAGE_DIR=os.environ["STORAGE_DIR"],
+        USER_AUDIO_DIR=os.environ["USER_AUDIO_DIR"],
+        TUTOR_AUDIO_DIR=str(TEST_ROOT / "storage" / f"tutor_audio_{suffix}"),
+    )
 
 
 def test_health_returns_backend_status() -> None:
@@ -407,6 +420,177 @@ def test_realtime_voice_chat_defaults_missing_level_to_hsk1(monkeypatch) -> None
 
     assert event["type"] == "session_started"
     assert event["payload"]["level"] == "HSK1 beginner"
+
+
+def test_realtime_fast_ack_emits_sequence_zero_before_model_audio(monkeypatch) -> None:
+    """Realtime fast ack emits playable sequence 0 before model TTS chunks."""
+    settings = _realtime_test_settings(use_fake_tts=False, suffix="fast_ack_success")
+
+    async def fake_stream_tutor_reply(
+        self: QwenClient,
+        transcript: str,
+        memory: object,
+        scenario: str,
+        level: str,
+    ):
+        """Yield one model sentence after fast ack has been scheduled."""
+        yield "在餐厅里，说您好更自然。"
+
+    async def fake_analyze_mistakes(
+        self: QwenClient,
+        transcript: str,
+        scenario: str,
+        level: str,
+    ) -> AnalysisResponse:
+        """Return deterministic structured feedback without live Qwen."""
+        return AnalysisResponse(
+            mistakes=[],
+            fluency_score=84,
+            confidence_score=80,
+            summary="Fast ack analysis",
+            next_focus="restaurant greeting",
+            next_drill="Practice greeting before ordering.",
+        )
+
+    async def fake_synthesize_speech(
+        self: QwenClient,
+        text: str,
+        output_path: str,
+    ) -> str:
+        """Write fast ack quickly and delay model chunks slightly."""
+        if "realtime-fast-ack" not in output_path:
+            await asyncio.sleep(0.02)
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake realtime tutor audio")
+        return str(path)
+
+    monkeypatch.setattr(realtime_voice_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(QwenClient, "transcribe_audio", _fake_realtime_transcribe_audio)
+    monkeypatch.setattr(QwenClient, "stream_tutor_reply", fake_stream_tutor_reply)
+    monkeypatch.setattr(QwenClient, "analyze_mistakes", fake_analyze_mistakes)
+    monkeypatch.setattr(QwenClient, "synthesize_speech", fake_synthesize_speech)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/voice-chat/realtime") as websocket:
+            websocket.send_json({"type": "start", "user_id": "demo-user-fast-ack"})
+            websocket.send_json(
+                {
+                    "type": "audio_chunk",
+                    "audio_base64": base64.b64encode(b"fake audio").decode("ascii"),
+                }
+            )
+            websocket.send_json({"type": "end_audio"})
+            events = _receive_realtime_events_until_done(websocket)
+
+    sentence_events = [event for event in events if event["type"] == "tutor_sentence"]
+    audio_events = [event for event in events if event["type"] == "audio_chunk_ready"]
+    assert sentence_events[0]["payload"] == {
+        "sequence": 0,
+        "text": "我来帮你改一句。",
+        "source": "fast_ack",
+    }
+    assert audio_events[0]["payload"]["sequence"] == 0
+    assert audio_events[0]["payload"]["source"] == "fast_ack"
+    model_sentence = next(
+        event for event in sentence_events if event["payload"].get("source") is None
+    )
+    assert model_sentence["payload"]["sequence"] == 1
+
+
+def test_realtime_fast_ack_failure_does_not_break_session(monkeypatch) -> None:
+    """Fast ack TTS failure is skipped while model-generated audio continues."""
+    settings = _realtime_test_settings(use_fake_tts=False, suffix="fast_ack_failure")
+
+    async def fake_stream_tutor_reply(
+        self: QwenClient,
+        transcript: str,
+        memory: object,
+        scenario: str,
+        level: str,
+    ):
+        """Yield one model sentence for normal TTS after ack failure."""
+        yield "请说：您好，我想点菜。"
+
+    async def fake_analyze_mistakes(
+        self: QwenClient,
+        transcript: str,
+        scenario: str,
+        level: str,
+    ) -> AnalysisResponse:
+        """Return deterministic structured feedback without live Qwen."""
+        return AnalysisResponse(
+            mistakes=[],
+            fluency_score=80,
+            confidence_score=80,
+            summary="Fast ack failure analysis",
+            next_focus="ordering sentence",
+            next_drill="Practice one complete ordering sentence.",
+        )
+
+    async def fake_synthesize_speech(
+        self: QwenClient,
+        text: str,
+        output_path: str,
+    ) -> str:
+        """Fail only the shared fast ack audio generation."""
+        if "realtime-fast-ack" in output_path:
+            raise ValueError("Qwen TTS request failed.")
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake realtime tutor audio")
+        return str(path)
+
+    monkeypatch.setattr(realtime_voice_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(QwenClient, "transcribe_audio", _fake_realtime_transcribe_audio)
+    monkeypatch.setattr(QwenClient, "stream_tutor_reply", fake_stream_tutor_reply)
+    monkeypatch.setattr(QwenClient, "analyze_mistakes", fake_analyze_mistakes)
+    monkeypatch.setattr(QwenClient, "synthesize_speech", fake_synthesize_speech)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/voice-chat/realtime") as websocket:
+            websocket.send_json({"type": "start", "user_id": "demo-user-fast-ack-fail"})
+            websocket.send_json(
+                {
+                    "type": "audio_chunk",
+                    "audio_base64": base64.b64encode(b"fake audio").decode("ascii"),
+                }
+            )
+            websocket.send_json({"type": "end_audio"})
+            events = _receive_realtime_events_until_done(websocket)
+
+    audio_sequences = [
+        event["payload"]["sequence"]
+        for event in events
+        if event["type"] == "audio_chunk_ready"
+    ]
+    assert 0 not in audio_sequences
+    assert 1 in audio_sequences
+    assert events[-1]["type"] == "done"
+
+
+def test_realtime_fake_tts_skips_fast_ack_sequence_zero(monkeypatch) -> None:
+    """Fake TTS mode skips sequence-0 fast ack and keeps normal flow working."""
+    monkeypatch.setattr(QwenClient, "transcribe_audio", _fake_realtime_transcribe_audio)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/voice-chat/realtime") as websocket:
+            websocket.send_json({"type": "start", "user_id": "demo-user-fast-ack-fake"})
+            websocket.send_json(
+                {
+                    "type": "audio_chunk",
+                    "audio_base64": base64.b64encode(b"fake audio").decode("ascii"),
+                }
+            )
+            websocket.send_json({"type": "end_audio"})
+            events = _receive_realtime_events_until_done(websocket)
+
+    assert not any(
+        event["type"] in {"tutor_sentence", "audio_chunk_ready"}
+        and event["payload"].get("sequence") == 0
+        for event in events
+    )
+    assert events[-1]["type"] == "done"
 
 
 def test_realtime_feedback_ready_can_emit_before_slow_audio_chunk(monkeypatch) -> None:

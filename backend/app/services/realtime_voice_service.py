@@ -34,6 +34,10 @@ from app.services.realtime_asr_service import (
     build_realtime_asr_session,
     decode_audio_chunk,
 )
+from app.services.realtime_fast_ack_service import (
+    build_fast_ack_audio_event,
+    fast_ack_sentence_event,
+)
 from app.services.sentence_tts_pipeline import SentenceTtsPipeline
 
 logger = logging.getLogger(__name__)
@@ -178,12 +182,18 @@ async def _handle_end_audio(
         ),
     )
     _log_elapsed("realtime.asr_final_seconds", state.started_at)
+    fast_ack_task = await _start_fast_ack(
+        websocket=websocket,
+        qwen_client=qwen_client,
+        state=state,
+    )
     await _run_tutor_feedback_memory_pipeline(
         db=db,
         qwen_client=qwen_client,
         state=state,
         asr_result=asr_result,
         websocket=websocket,
+        fast_ack_task=fast_ack_task,
     )
 
 
@@ -193,6 +203,7 @@ async def _run_tutor_feedback_memory_pipeline(
     state: "_RealtimeSessionState",
     asr_result: RealtimeAsrResult,
     websocket: WebSocket,
+    fast_ack_task: "asyncio.Task[RealtimeVoiceEvent | None] | None",
 ) -> None:
     """Stream tutor response first, then persist feedback and memory updates."""
     settings = get_settings()
@@ -212,6 +223,7 @@ async def _run_tutor_feedback_memory_pipeline(
     analysis: AnalysisResponse | None = None
     feedback_sent = False
     memory_sent = False
+    fast_ack_done = False
 
     async for token in qwen_client.stream_tutor_reply(
         transcript=asr_result.transcript,
@@ -230,6 +242,12 @@ async def _run_tutor_feedback_memory_pipeline(
         )
         await _send_events(websocket, state, tts_pipeline.accept_text_chunk(token))
         await _send_events(websocket, state, await tts_pipeline.drain_ready())
+        fast_ack_done = await _emit_fast_ack_if_ready(
+            websocket=websocket,
+            state=state,
+            fast_ack_task=fast_ack_task,
+            already_done=fast_ack_done,
+        )
         if analysis is None and analysis_task.done():
             analysis = await analysis_task
             feedback_sent = await _emit_feedback_ready(
@@ -272,6 +290,8 @@ async def _run_tutor_feedback_memory_pipeline(
         analysis=analysis,
         feedback_sent=feedback_sent,
         memory_sent=memory_sent,
+        fast_ack_task=fast_ack_task,
+        fast_ack_done=fast_ack_done,
     )
     if analysis is None or not memory_sent:
         raise ValueError("Realtime feedback and memory update did not complete.")
@@ -296,9 +316,15 @@ async def _finish_analysis_tts_and_memory(
     analysis: AnalysisResponse | None,
     feedback_sent: bool,
     memory_sent: bool,
+    fast_ack_task: "asyncio.Task[RealtimeVoiceEvent | None] | None",
+    fast_ack_done: bool,
 ) -> tuple[AnalysisResponse | None, bool, bool]:
     """Drain pending TTS while emitting feedback as soon as analysis finishes."""
-    while tts_pipeline.has_pending_tasks() or analysis is None:
+    while (
+        tts_pipeline.has_pending_tasks()
+        or analysis is None
+        or (fast_ack_task is not None and not fast_ack_done)
+    ):
         waiters: dict[asyncio.Task[object], str] = {}
         if tts_pipeline.has_pending_tasks():
             waiters[
@@ -306,6 +332,8 @@ async def _finish_analysis_tts_and_memory(
             ] = "tts"
         if analysis is None:
             waiters[analysis_task] = "analysis"
+        if fast_ack_task is not None and not fast_ack_done:
+            waiters[fast_ack_task] = "fast_ack"
 
         done_tasks, pending_tasks = await asyncio.wait(
             waiters,
@@ -318,6 +346,18 @@ async def _finish_analysis_tts_and_memory(
                 events = task.result()
                 if isinstance(events, list):
                     await _send_events(websocket, state, events)
+                continue
+            if waiters[task] == "fast_ack":
+                event = task.result()
+                fast_ack_done = True
+                if isinstance(event, RealtimeVoiceEvent):
+                    await _send_events(websocket, state, [event])
+                    _log_elapsed(
+                        "realtime.fast_ack_audio_ready_seconds",
+                        state.started_at,
+                    )
+                else:
+                    _log_elapsed("realtime.fast_ack_skipped_seconds", state.started_at)
                 continue
 
             analysis = task.result()
@@ -338,6 +378,41 @@ async def _finish_analysis_tts_and_memory(
                     already_sent=memory_sent,
                 )
     return analysis, feedback_sent, memory_sent
+
+
+async def _start_fast_ack(
+    websocket: WebSocket,
+    qwen_client: QwenClient,
+    state: "_RealtimeSessionState",
+) -> asyncio.Task[RealtimeVoiceEvent | None] | None:
+    """Start sequence-0 fast acknowledgement audio generation when possible."""
+    settings = get_settings()
+    if settings.USE_FAKE_TTS:
+        _log_elapsed("realtime.fast_ack_skipped_seconds", state.started_at)
+        return None
+    await _send_events(websocket, state, [fast_ack_sentence_event()])
+    _log_elapsed("realtime.fast_ack_start_seconds", state.started_at)
+    return asyncio.create_task(
+        build_fast_ack_audio_event(qwen_client=qwen_client, settings=settings)
+    )
+
+
+async def _emit_fast_ack_if_ready(
+    websocket: WebSocket,
+    state: "_RealtimeSessionState",
+    fast_ack_task: "asyncio.Task[RealtimeVoiceEvent | None] | None",
+    already_done: bool,
+) -> bool:
+    """Emit completed sequence-0 fast ack audio without blocking streaming."""
+    if already_done or fast_ack_task is None or not fast_ack_task.done():
+        return already_done
+    event = await fast_ack_task
+    if event is None:
+        _log_elapsed("realtime.fast_ack_skipped_seconds", state.started_at)
+        return True
+    await _send_events(websocket, state, [event])
+    _log_elapsed("realtime.fast_ack_audio_ready_seconds", state.started_at)
+    return True
 
 
 async def _cancel_tts_waiters(

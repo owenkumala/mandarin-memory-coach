@@ -339,7 +339,11 @@ def _tutor_realtime_system_prompt() -> str:
     return (
         "You are SpeakHan, a Mandarin speaking coach for HSK1-HSK6 learners. "
         "Your realtime reply will be spoken by text-to-speech. "
-        "Reply in 2 to 4 short spoken sentences. "
+        "A short acknowledgement has already been spoken: 我来帮你改一句。 "
+        "Do not repeat that acknowledgement. "
+        "Reply in 2 to 3 short spoken sentences. "
+        "Start directly with the correction. "
+        "The first generated sentence must be under 25 Chinese characters. "
         "Use mainly Mandarin, with brief English only if necessary. "
         "Do not use emoji, markdown, bullet points, parentheses, slash marks, "
         "plus signs, weird symbols, or quote-heavy explanations. "
@@ -803,7 +807,11 @@ def _tutor_realtime_user_prompt(
         {tutor_context}
 
         Realtime TTS constraints:
-        - Reply with 2 to 4 short spoken sentences only.
+        - A short acknowledgement has already been spoken: 我来帮你改一句。
+        - Do not repeat that acknowledgement.
+        - Start directly with the correction.
+        - Reply with 2 to 3 short spoken sentences only.
+        - The first generated sentence must be under 25 Chinese characters.
         - Do not use emoji, markdown, bullets, parentheses, slash marks, plus signs,
           tables, headings, or quote-heavy examples.
         - Avoid nested Chinese quotation marks and avoid long explanations.

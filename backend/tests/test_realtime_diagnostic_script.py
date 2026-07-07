@@ -44,6 +44,17 @@ def test_realtime_diagnostic_formats_representative_events() -> None:
         4.1,
         {"type": "tutor_token", "payload": {"text": "很好，你可以说。"}},
     )
+    fast_ack_line = diagnostic.format_event_line(
+        3.1,
+        {
+            "type": "audio_chunk_ready",
+            "payload": {
+                "sequence": 0,
+                "source": "fast_ack",
+                "audio_url": "/storage/tutor_audio/_shared/realtime-fast-ack.mp3",
+            },
+        },
+    )
     error_line = diagnostic.format_event_line(
         6.0,
         {
@@ -61,6 +72,10 @@ def test_realtime_diagnostic_formats_representative_events() -> None:
         "payload_keys=session_id,user_id,scenario,level,asr_mode"
     )
     assert token_line == "4.10s tutor_token text=很好，你可以说。"
+    assert fast_ack_line == (
+        "3.10s audio_chunk_ready sequence=0 source=fast_ack "
+        "audio_url=/storage/tutor_audio/_shared/realtime-fast-ack.mp3"
+    )
     assert "6.00s error severity=warning code=tts_sentence_failed" in error_line
 
 

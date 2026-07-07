@@ -199,11 +199,15 @@ def test_realtime_tutor_prompt_is_tts_safe_and_level_aware() -> None:
         level="HSK3 lower intermediate",
     )
 
-    assert "2 to 4 short spoken sentences" in system_prompt
+    assert "A short acknowledgement has already been spoken" in system_prompt
+    assert "Do not repeat that acknowledgement" in system_prompt
+    assert "2 to 3 short spoken sentences" in system_prompt
+    assert "under 25 Chinese characters" in system_prompt
     assert "Do not use emoji" in system_prompt
     assert "Avoid nested Chinese quotation marks" in system_prompt
     assert "under 120 Chinese characters" in system_prompt
     assert "HSK3 lower intermediate" in user_prompt
+    assert "Start directly with the correction" in user_prompt
     assert "For HSK3, use practical restaurant language" in user_prompt
 
 
