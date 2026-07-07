@@ -33,6 +33,8 @@ SpeakHan / Mandarin Memory Coach project.
 - [ ] Run manual real-ASR test with short spoken Mandarin audio.
 - [ ] Run `python3 scripts/check_qwen_asr.py` to confirm ASR key/endpoint.
 - [ ] If local audio paths fail, upload audio to OSS or another accessible URL.
+- [ ] Set `PUBLIC_BACKEND_BASE_URL` to ngrok, Alibaba Cloud ECS, or another
+      public backend URL before real-ASR voice-chat demo.
 - [ ] Confirm demo user memory should be reset or use a fresh `user_id`.
 
 ## Next Backend Tasks

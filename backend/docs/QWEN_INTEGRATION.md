@@ -19,12 +19,13 @@ QWEN_API_KEY=...
 DASHSCOPE_API_KEY=
 QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 QWEN_CHAT_MODEL=qwen-plus
-QWEN_ASR_BASE_URL=
+QWEN_ASR_BASE_URL=https://dashscope-intl.aliyuncs.com/api/v1
 QWEN_ASR_MODEL=qwen3-asr-flash
 QWEN_ASR_LANGUAGE=zh
 QWEN_ASR_ENABLE_LID=true
 QWEN_ASR_ENABLE_ITN=false
-QWEN_ASR_AUDIO_REF_MODE=local_path
+QWEN_ASR_AUDIO_REF_MODE=public_url
+PUBLIC_BACKEND_BASE_URL=
 QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
 QWEN_ASR_MAX_RETRIES=0
 QWEN_REQUEST_TIMEOUT_SECONDS=30
@@ -73,6 +74,16 @@ ASR uses `DASHSCOPE_API_KEY` first, then falls back to `QWEN_API_KEY`. A 401
 ASR endpoint, or the SDK is hitting the wrong region/base URL. Do not commit
 real keys in `.env`.
 
+Manual testing confirmed `qwen3-asr-flash` works with HTTPS audio URLs. The
+Qwen sample URL `https://dashscope.oss-cn-beijing.aliyuncs.com/audios/welcome.mp3`
+returned the transcript `欢迎使用阿里云。`.
+
+Local file paths can fail because the DashScope SDK local-file upload
+certificate flow returned `InvalidApiKey` with this Qwen Cloud key. For demo,
+use `QWEN_ASR_AUDIO_REF_MODE=public_url` and set `PUBLIC_BACKEND_BASE_URL` to a
+publicly reachable backend URL, such as an ngrok URL, a deployed Alibaba Cloud
+ECS URL, or serve/upload the file through OSS.
+
 `qwen3-asr-flash-realtime` is a WebSocket streaming model and is not implemented
 yet. This backend currently implements upload-style ASR with `qwen3-asr-flash`.
 
@@ -100,11 +111,14 @@ First run the ASR diagnostic script:
 cd backend
 python3 scripts/check_qwen_asr.py
 python3 scripts/check_qwen_asr.py sample-mandarin.m4a
+python3 scripts/check_qwen_asr.py --audio-ref-mode local_path sample-mandarin.m4a
 ```
 
 The script prints whether `QWEN_API_KEY` and `DASHSCOPE_API_KEY` are present,
 which key source is used, the chat and ASR base URLs, the model, and the audio
 reference. It never prints key values.
+If the audio argument is already an HTTPS URL, the script sends it directly to
+ASR.
 
 Run the backend:
 
@@ -143,5 +157,6 @@ Expected response:
 - memory, session, and lesson-plan rows still update
 - `tutor_audio_url` remains `null`
 
-If local file references are not accepted by DashScope in this environment, the
-next step is to upload audio to OSS or another accessible URL before calling ASR.
+If `QWEN_ASR_AUDIO_REF_MODE=public_url`, the backend builds the ASR audio
+reference as `PUBLIC_BACKEND_BASE_URL + /storage/...`. Ensure the resulting URL
+is reachable by Alibaba Cloud before the live demo.

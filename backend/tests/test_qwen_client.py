@@ -13,6 +13,7 @@ from app.services import qwen_client
 from app.services.qwen_client import (
     QwenClient,
     _asr_api_key,
+    _build_asr_audio_ref,
     _extract_asr_transcript,
     _safe_error_detail,
     parse_dashscope_asr_response,
@@ -243,6 +244,7 @@ def test_real_asr_success_with_mocked_dashscope_call(tmp_path, monkeypatch) -> N
             QWEN_API_KEY="test-key",
             QWEN_ASR_MODEL="qwen-asr-test",
             QWEN_ASR_BASE_URL="https://dashscope-intl.aliyuncs.com/api/v1",
+            QWEN_ASR_AUDIO_REF_MODE="local_path",
         )
     )
 
@@ -277,6 +279,87 @@ def test_dashscope_asr_non_200_response_raises_useful_error() -> None:
     assert "InvalidAPI-key provided for [redacted]." in message
     assert "QWEN_ASR_BASE_URL is correct" in message
     assert "secret-key" not in message
+
+
+def test_asr_public_url_mode_builds_url_from_storage_path(tmp_path) -> None:
+    """Public URL mode converts stored audio paths into backend URLs."""
+    storage_dir = tmp_path / "storage"
+    audio_path = storage_dir / "user_audio" / "sample.m4a"
+    audio_path.parent.mkdir(parents=True)
+    audio_path.write_bytes(b"fake audio")
+    settings = Settings(
+        STORAGE_DIR=str(storage_dir),
+        PUBLIC_BACKEND_BASE_URL="https://demo.example.com",
+        QWEN_ASR_AUDIO_REF_MODE="public_url",
+    )
+
+    audio_ref = _build_asr_audio_ref(str(audio_path), settings)
+
+    assert audio_ref == "https://demo.example.com/storage/user_audio/sample.m4a"
+
+
+def test_asr_public_url_mode_requires_public_backend_base_url(tmp_path) -> None:
+    """Public URL mode fails clearly when no public backend URL is configured."""
+    storage_dir = tmp_path / "storage"
+    audio_path = storage_dir / "user_audio" / "sample.m4a"
+    audio_path.parent.mkdir(parents=True)
+    audio_path.write_bytes(b"fake audio")
+
+    with pytest.raises(ValueError, match="PUBLIC_BACKEND_BASE_URL is required"):
+        _build_asr_audio_ref(
+            str(audio_path),
+            Settings(
+                STORAGE_DIR=str(storage_dir),
+                PUBLIC_BACKEND_BASE_URL="",
+                QWEN_ASR_AUDIO_REF_MODE="public_url",
+            ),
+        )
+
+
+def test_asr_local_path_mode_returns_raw_path(tmp_path) -> None:
+    """Local path diagnostic mode still returns the raw file path."""
+    audio_path = tmp_path / "sample.m4a"
+    audio_path.write_bytes(b"fake audio")
+
+    audio_ref = _build_asr_audio_ref(
+        str(audio_path),
+        Settings(QWEN_ASR_AUDIO_REF_MODE="local_path"),
+    )
+
+    assert audio_ref == str(audio_path)
+
+
+def test_asr_file_url_mode_returns_file_uri(tmp_path) -> None:
+    """File URL diagnostic mode still returns a file:// URI."""
+    audio_path = tmp_path / "sample.m4a"
+    audio_path.write_bytes(b"fake audio")
+
+    audio_ref = _build_asr_audio_ref(
+        str(audio_path),
+        Settings(QWEN_ASR_AUDIO_REF_MODE="file_url"),
+    )
+
+    assert audio_ref == audio_path.resolve().as_uri()
+
+
+def test_asr_public_url_join_avoids_double_slashes(tmp_path) -> None:
+    """Public URL mode joins base URL and /storage path cleanly."""
+    storage_dir = tmp_path / "storage"
+    audio_path = storage_dir / "user_audio" / "sample.m4a"
+    audio_path.parent.mkdir(parents=True)
+    audio_path.write_bytes(b"fake audio")
+
+    audio_ref = _build_asr_audio_ref(
+        str(audio_path),
+        Settings(
+            STORAGE_DIR=str(storage_dir),
+            PUBLIC_BACKEND_BASE_URL="https://demo.example.com/",
+            QWEN_ASR_AUDIO_REF_MODE="public_url",
+        ),
+    )
+
+    assert audio_ref == "https://demo.example.com/storage/user_audio/sample.m4a"
+    assert "com//storage" not in audio_ref
 
 
 def test_asr_parser_extracts_content_string() -> None:

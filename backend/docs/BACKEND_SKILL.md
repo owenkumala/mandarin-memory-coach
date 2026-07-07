@@ -103,12 +103,12 @@ QWEN_API_KEY=
 DASHSCOPE_API_KEY=
 QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 QWEN_CHAT_MODEL=qwen-plus
-QWEN_ASR_BASE_URL=
+QWEN_ASR_BASE_URL=https://dashscope-intl.aliyuncs.com/api/v1
 QWEN_ASR_MODEL=qwen3-asr-flash
 QWEN_ASR_LANGUAGE=zh
 QWEN_ASR_ENABLE_LID=true
 QWEN_ASR_ENABLE_ITN=false
-QWEN_ASR_AUDIO_REF_MODE=local_path
+QWEN_ASR_AUDIO_REF_MODE=public_url
 QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
 QWEN_ASR_MAX_RETRIES=0
 QWEN_REQUEST_TIMEOUT_SECONDS=30
@@ -121,6 +121,7 @@ DATABASE_URL=sqlite:///./memory.db
 STORAGE_DIR=./storage
 USER_AUDIO_DIR=./storage/user_audio
 TUTOR_AUDIO_DIR=./storage/tutor_audio
+PUBLIC_BACKEND_BASE_URL=
 ```
 
 ### Local run instructions
@@ -174,6 +175,9 @@ Automated tests must not call live Qwen. Keep live Qwen checks manual.
 - Put Qwen calls only in `app/services/qwen_client.py`.
 - Keep `QWEN_BASE_URL` for OpenAI-compatible chat and `QWEN_ASR_BASE_URL` for
   DashScope native ASR overrides.
+- Use `QWEN_ASR_AUDIO_REF_MODE=public_url` for demos, with
+  `PUBLIC_BACKEND_BASE_URL` pointing to a public backend URL that can serve
+  `/storage/...` audio files.
 - Put DB logic in `memory_service.py` and `lesson_service.py`.
 - Use explicit Pydantic `response_model` schemas for every endpoint.
 - Keep fake-first external dependencies working.

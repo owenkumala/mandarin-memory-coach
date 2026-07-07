@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     STORAGE_DIR: str = "./storage"
     USER_AUDIO_DIR: str = "./storage/user_audio"
     TUTOR_AUDIO_DIR: str = "./storage/tutor_audio"
+    PUBLIC_BACKEND_BASE_URL: str = ""
     USE_FAKE_QWEN: bool = True
     USE_FAKE_ASR: bool = True
     QWEN_API_KEY: str = ""
@@ -29,7 +30,7 @@ class Settings(BaseSettings):
     QWEN_ASR_LANGUAGE: str = "zh"
     QWEN_ASR_ENABLE_LID: bool = True
     QWEN_ASR_ENABLE_ITN: bool = False
-    QWEN_ASR_AUDIO_REF_MODE: str = "local_path"
+    QWEN_ASR_AUDIO_REF_MODE: str = "public_url"
     QWEN_ASR_REQUEST_TIMEOUT_SECONDS: float = 30.0
     QWEN_ASR_MAX_RETRIES: int = 0
     QWEN_TTS_MODEL: str = ""

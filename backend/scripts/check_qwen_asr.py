@@ -19,6 +19,7 @@ if str(BACKEND_DIR) not in sys.path:
 from app.core.config import Settings  # noqa: E402
 from app.services.qwen_client import (  # noqa: E402
     _asr_api_key,
+    _build_asr_audio_ref,
     _safe_error_detail,
     call_dashscope_asr,
     parse_dashscope_asr_response,
@@ -36,11 +37,20 @@ def main() -> None:
         default=DEFAULT_AUDIO_URL,
         help="Audio path or URL. Defaults to Qwen Cloud sample audio URL.",
     )
+    parser.add_argument(
+        "--audio-ref-mode",
+        choices=("public_url", "local_path", "file_url"),
+        help="Override QWEN_ASR_AUDIO_REF_MODE for this diagnostic run.",
+    )
     args = parser.parse_args()
 
     load_dotenv(BACKEND_DIR / ".env")
     settings = Settings()
-    audio_ref = _audio_ref(args.audio)
+    if args.audio_ref_mode:
+        settings = settings.model_copy(
+            update={"QWEN_ASR_AUDIO_REF_MODE": args.audio_ref_mode}
+        )
+    audio_ref = _audio_ref(args.audio, settings)
     _print_config(settings=settings, audio_ref=audio_ref)
 
     try:
@@ -55,11 +65,21 @@ def main() -> None:
         raise SystemExit(1) from exc
 
 
-def _audio_ref(audio_arg: str) -> str:
-    """Return a URL as-is or a local audio path string for DashScope ASR."""
+def _audio_ref(audio_arg: str, settings: Settings) -> str:
+    """Return a direct URL or build the configured local audio reference."""
     if audio_arg.startswith(("http://", "https://")):
         return audio_arg
-    return str(Path(audio_arg))
+
+    try:
+        return _build_asr_audio_ref(str(Path(audio_arg)), settings)
+    except ValueError as exc:
+        if settings.QWEN_ASR_AUDIO_REF_MODE.strip().lower() == "public_url":
+            raise ValueError(
+                "Local audio with QWEN_ASR_AUDIO_REF_MODE=public_url must be "
+                "under STORAGE_DIR and PUBLIC_BACKEND_BASE_URL must be set. "
+                "Use a public HTTPS URL, ngrok/deployed backend URL, or OSS."
+            ) from exc
+        raise
 
 
 def _print_config(settings: Settings, audio_ref: str) -> None:
@@ -74,6 +94,8 @@ def _print_config(settings: Settings, audio_ref: str) -> None:
     print(f"QWEN_BASE_URL={settings.QWEN_BASE_URL}")
     print(f"QWEN_ASR_BASE_URL={settings.QWEN_ASR_BASE_URL}")
     print(f"QWEN_ASR_MODEL={settings.QWEN_ASR_MODEL}")
+    print(f"QWEN_ASR_AUDIO_REF_MODE={settings.QWEN_ASR_AUDIO_REF_MODE}")
+    print(f"PUBLIC_BACKEND_BASE_URL={settings.PUBLIC_BACKEND_BASE_URL}")
     print(f"key_source_used={key_source}")
     print(f"audio_ref={audio_ref}")
 

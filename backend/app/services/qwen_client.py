@@ -26,6 +26,7 @@ from app.schemas import (
     MistakeType,
     WeaknessCategory,
 )
+from app.utils.audio import storage_url
 
 logger = logging.getLogger(__name__)
 
@@ -349,13 +350,31 @@ def _build_asr_audio_ref(audio_path: str, settings: Settings) -> str:
         raise ValueError("Audio file for Qwen ASR was not a regular file.")
 
     audio_ref_mode = settings.QWEN_ASR_AUDIO_REF_MODE.strip().lower()
+    if audio_ref_mode == "public_url":
+        return _public_audio_url(str(path), settings)
     if audio_ref_mode == "local_path":
         return str(path)
     if audio_ref_mode == "file_url":
         return path.resolve().as_uri()
     raise ValueError(
-        "QWEN_ASR_AUDIO_REF_MODE must be one of: local_path, file_url."
+        "QWEN_ASR_AUDIO_REF_MODE must be one of: public_url, local_path, file_url."
     )
+
+
+def _public_audio_url(audio_path: str, settings: Settings) -> str:
+    """Build a public URL for a stored audio file served by the backend."""
+    if not settings.PUBLIC_BACKEND_BASE_URL.strip():
+        raise ValueError(
+            "PUBLIC_BACKEND_BASE_URL is required for "
+            "QWEN_ASR_AUDIO_REF_MODE=public_url."
+        )
+    relative_storage_url = storage_url(audio_path, settings.STORAGE_DIR)
+    return _join_url(settings.PUBLIC_BACKEND_BASE_URL, relative_storage_url)
+
+
+def _join_url(base_url: str, path: str) -> str:
+    """Join a public base URL and path without accidental double slashes."""
+    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
 
 
 def parse_dashscope_asr_response(response: object, settings: Settings) -> str:
