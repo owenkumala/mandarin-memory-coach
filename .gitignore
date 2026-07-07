@@ -17,3 +17,13 @@ backend/storage/tutor_audio/*
 !backend/storage/tutor_audio/.gitkeep
 sample.webm
 
+# Frontend runtime artifacts.
+frontend/.env.local
+frontend/.env*.local
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/dist/
+frontend/coverage/
+frontend/.turbo/
+frontend/next-env.d.ts
