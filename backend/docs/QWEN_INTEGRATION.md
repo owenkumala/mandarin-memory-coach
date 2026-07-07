@@ -44,8 +44,8 @@ S3_PREFIX=speechan/audio/
 S3_SIGNED_URL_EXPIRES_SECONDS=900
 QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
 QWEN_ASR_MAX_RETRIES=0
-QWEN_TTS_MODEL=
-QWEN_TTS_VOICE=
+QWEN_TTS_MODEL=cosyvoice-v3-plus
+QWEN_TTS_VOICE=longanyang
 QWEN_TTS_BASE_URL=
 QWEN_TTS_OUTPUT_FORMAT=mp3
 QWEN_REQUEST_TIMEOUT_SECONDS=30
@@ -126,22 +126,26 @@ TTS is optional and configured separately with `USE_FAKE_TTS`. When
 `USE_FAKE_TTS=true`, the backend keeps returning `tutor_audio_url=null` and the
 frontend should use browser Web Speech API playback as the fallback. When
 `USE_FAKE_TTS=false`, `synthesize_speech()` uses the Alibaba DashScope SDK
-`HttpSpeechSynthesizer.call(...)` method in streaming mode and writes the audio
-bytes to `backend/storage/tutor_audio/`.
+`dashscope.audio.tts_v2.SpeechSynthesizer` official non-streaming CosyVoice
+flow and writes the returned audio bytes to `backend/storage/tutor_audio/`.
 
 For TTS, set:
 
 ```text
 USE_FAKE_TTS=false
-QWEN_TTS_MODEL=<DashScope TTS model, for example a CosyVoice model>
-QWEN_TTS_VOICE=<DashScope voice name supported by that model>
-QWEN_TTS_BASE_URL=https://dashscope-intl.aliyuncs.com/api/v1
+QWEN_TTS_MODEL=cosyvoice-v3-plus
+QWEN_TTS_VOICE=longanyang
+QWEN_TTS_BASE_URL=
 QWEN_TTS_OUTPUT_FORMAT=mp3
 ```
 
 `DASHSCOPE_API_KEY` is used first for TTS, then `QWEN_API_KEY`. Do not commit
 real keys. If Qwen/DashScope TTS setup fails during demo prep, keep
 `USE_FAKE_TTS=true` and rely on browser TTS in the frontend.
+
+Leave `QWEN_TTS_BASE_URL` empty for the official Qwen Cloud CosyVoice example
+unless you have a supported DashScope websocket base URL override. Do not set
+it to the OpenAI-compatible chat URL or the old HTTP TTS URL.
 
 ## What is real
 

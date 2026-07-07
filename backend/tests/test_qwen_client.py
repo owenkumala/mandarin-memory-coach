@@ -273,23 +273,24 @@ def test_fake_tts_returns_none(tmp_path) -> None:
 
 
 def test_real_tts_success_with_mocked_dashscope_call(tmp_path, monkeypatch) -> None:
-    """Real TTS uses DashScope HTTP TTS and writes streamed audio bytes."""
+    """Real TTS uses DashScope CosyVoice TTS and writes returned audio bytes."""
     output_path = tmp_path / "reply.mp3"
-    call_kwargs = {}
+    init_kwargs = {}
+    call_args = []
 
-    def fake_call(**kwargs):
-        """Return fake streamed TTS chunks without live network."""
-        call_kwargs.update(kwargs)
-        return [
-            SimpleNamespace(audio_data=b"fake-"),
-            SimpleNamespace(audio_data=b"audio"),
-        ]
+    class FakeSpeechSynthesizer:
+        """Fake DashScope tts_v2 synthesizer for non-live tests."""
 
-    monkeypatch.setattr(
-        qwen_client.dashscope.HttpSpeechSynthesizer,
-        "call",
-        staticmethod(fake_call),
-    )
+        def __init__(self, **kwargs) -> None:
+            """Capture constructor settings for assertions."""
+            init_kwargs.update(kwargs)
+
+        def call(self, text: str) -> bytes:
+            """Return fake complete audio bytes."""
+            call_args.append(text)
+            return b"fake-audio"
+
+    monkeypatch.setattr(qwen_client, "SpeechSynthesizer", FakeSpeechSynthesizer)
 
     synthesized_path = asyncio.run(
         run_dashscope_tts(
@@ -297,9 +298,9 @@ def test_real_tts_success_with_mocked_dashscope_call(tmp_path, monkeypatch) -> N
                 USE_FAKE_TTS=False,
                 DASHSCOPE_API_KEY="dash-key",
                 QWEN_API_KEY="qwen-key",
-                QWEN_TTS_MODEL="cosyvoice-v3-flash",
-                QWEN_TTS_VOICE="longxiaochun",
-                QWEN_TTS_BASE_URL="https://dashscope-intl.aliyuncs.com/api/v1",
+                QWEN_TTS_MODEL="cosyvoice-v3-plus",
+                QWEN_TTS_VOICE="longanyang",
+                QWEN_TTS_BASE_URL="",
                 QWEN_TTS_OUTPUT_FORMAT="mp3",
             ),
             "欢迎回来！",
@@ -309,12 +310,40 @@ def test_real_tts_success_with_mocked_dashscope_call(tmp_path, monkeypatch) -> N
 
     assert synthesized_path == str(output_path)
     assert output_path.read_bytes() == b"fake-audio"
-    assert call_kwargs["model"] == "cosyvoice-v3-flash"
-    assert call_kwargs["voice"] == "longxiaochun"
-    assert call_kwargs["audio_format"] == "mp3"
-    assert call_kwargs["stream"] is True
-    assert call_kwargs["api_key"] == "dash-key"
-    assert call_kwargs["url"] == "https://dashscope-intl.aliyuncs.com/api/v1"
+    assert init_kwargs["model"] == "cosyvoice-v3-plus"
+    assert init_kwargs["voice"] == "longanyang"
+    assert init_kwargs["format"] == qwen_client.AudioFormat.MP3_24000HZ_MONO_256KBPS
+    assert init_kwargs["url"] is None
+    assert call_args == ["欢迎回来！"]
+
+
+def test_real_tts_type_error_becomes_value_error(tmp_path, monkeypatch) -> None:
+    """DashScope TTS SDK type errors are converted into a useful ValueError."""
+    class BrokenSpeechSynthesizer:
+        """Fake synthesizer that simulates an SDK call failure."""
+
+        def __init__(self, **kwargs) -> None:
+            """Accept constructor kwargs like the real SDK."""
+
+        def call(self, text: str) -> bytes:
+            """Raise a non-live SDK-style error."""
+            raise TypeError("bad tts response")
+
+    monkeypatch.setattr(qwen_client, "SpeechSynthesizer", BrokenSpeechSynthesizer)
+
+    with pytest.raises(ValueError, match="Qwen TTS request failed."):
+        asyncio.run(
+            run_dashscope_tts(
+                Settings(
+                    USE_FAKE_TTS=False,
+                    QWEN_API_KEY="qwen-key",
+                    QWEN_TTS_MODEL="cosyvoice-v3-plus",
+                    QWEN_TTS_VOICE="longanyang",
+                ),
+                "你好",
+                str(tmp_path / "reply.mp3"),
+            )
+        )
 
 
 def test_real_tts_missing_model_raises_useful_error(tmp_path) -> None:
@@ -326,7 +355,7 @@ def test_real_tts_missing_model_raises_useful_error(tmp_path) -> None:
                     USE_FAKE_TTS=False,
                     DASHSCOPE_API_KEY="dash-key",
                     QWEN_TTS_MODEL="",
-                    QWEN_TTS_VOICE="longxiaochun",
+                    QWEN_TTS_VOICE="longanyang",
                 ),
                 "你好",
                 str(tmp_path / "reply.mp3"),

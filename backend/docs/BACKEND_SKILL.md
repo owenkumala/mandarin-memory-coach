@@ -78,7 +78,7 @@ points to stored tutor audio when optional Qwen/DashScope TTS is configured.
   configured.
 - Fake ASR remains available; `transcribe_audio()` returns `我想吃中国菜`.
 - TTS is optional. `synthesize_speech()` returns `None` when
-  `USE_FAKE_TTS=true`, and can call DashScope HTTP TTS when
+  `USE_FAKE_TTS=true`, and can call DashScope CosyVoice TTS v2 when
   `USE_FAKE_TTS=false`.
 
 ### Recommended model settings
@@ -114,8 +114,8 @@ QWEN_ASR_ENABLE_ITN=false
 QWEN_ASR_AUDIO_REF_MODE=s3_url
 QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
 QWEN_ASR_MAX_RETRIES=0
-QWEN_TTS_MODEL=
-QWEN_TTS_VOICE=
+QWEN_TTS_MODEL=cosyvoice-v3-plus
+QWEN_TTS_VOICE=longanyang
 QWEN_TTS_BASE_URL=
 QWEN_TTS_OUTPUT_FORMAT=mp3
 QWEN_REQUEST_TIMEOUT_SECONDS=30

@@ -14,6 +14,7 @@ os.environ["STORAGE_DIR"] = str(TEST_ROOT / "storage")
 os.environ["USER_AUDIO_DIR"] = str(TEST_ROOT / "storage" / "user_audio")
 os.environ["TUTOR_AUDIO_DIR"] = str(TEST_ROOT / "storage" / "tutor_audio")
 os.environ["USE_FAKE_QWEN"] = "true"
+os.environ["USE_FAKE_TTS"] = "true"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
