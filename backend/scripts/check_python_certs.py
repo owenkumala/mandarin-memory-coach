@@ -6,6 +6,7 @@ that TLS and network connectivity reached the service.
 """
 
 import asyncio
+from pathlib import Path
 import platform
 import ssl
 import sys
@@ -17,8 +18,6 @@ try:
     import websockets
 except ImportError:  # pragma: no cover - manual diagnostic dependency guard.
     websockets = None
-
-from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:

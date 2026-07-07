@@ -7,6 +7,8 @@ final response assembly.
 
 import logging
 import time
+from pathlib import Path
+from uuid import uuid4
 
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
@@ -146,13 +148,10 @@ async def _generate_tutor_audio_url(
 ) -> str | None:
     """Run optional TTS and convert a generated file path to a storage URL."""
     settings = get_settings()
-    tutor_audio_path = build_audio_file_path(
+    tutor_audio_path = _build_tutor_audio_path(
         settings.TUTOR_AUDIO_DIR,
         user_id,
-        (
-            f"reply-{int(time.time() * 1000)}."
-            f"{_tutor_audio_extension(settings.QWEN_TTS_OUTPUT_FORMAT)}"
-        ),
+        settings.QWEN_TTS_OUTPUT_FORMAT,
     )
     try:
         synthesized_path = await qwen_client.synthesize_speech(
@@ -165,6 +164,25 @@ async def _generate_tutor_audio_url(
     if synthesized_path is None:
         return None
     return storage_url(synthesized_path, settings.STORAGE_DIR)
+
+
+def _build_tutor_audio_path(
+    tutor_audio_dir: str,
+    user_id: str,
+    output_format: str,
+) -> Path:
+    """Return a user-scoped tutor audio path with a strong unique filename."""
+    safe_user_id = _safe_path_segment(user_id)
+    extension = _tutor_audio_extension(output_format)
+    return Path(tutor_audio_dir) / safe_user_id / f"reply-{uuid4().hex}.{extension}"
+
+
+def _safe_path_segment(value: str) -> str:
+    """Normalize user-provided path segments for local storage paths."""
+    safe_value = "".join(
+        character for character in value if character.isalnum() or character in "-_"
+    )
+    return safe_value or "user"
 
 
 def _tutor_audio_extension(output_format: str) -> str:

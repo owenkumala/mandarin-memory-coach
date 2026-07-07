@@ -254,8 +254,11 @@ def test_tutor_audio_paths_are_unique(monkeypatch) -> None:
 
     assert first_url != second_url
     assert generated_paths[0] != generated_paths[1]
-    assert generated_paths[0].endswith(".mp3")
-    assert generated_paths[1].endswith(".mp3")
+    for generated_path in generated_paths:
+        path = Path(generated_path)
+        assert path.parent.name == "demo-user-unique-tts"
+        assert path.name.startswith("reply-")
+        assert path.name.endswith(".mp3")
 
 
 def test_repeated_mistake_score_stays_at_or_above_latest_severity() -> None:
