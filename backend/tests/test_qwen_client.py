@@ -24,6 +24,7 @@ from app.services.qwen_client import (
     parse_tutor_turn_json,
     strip_json_code_fence,
 )
+from scripts.check_qwen_asr import _safe_audio_ref
 
 
 class _FakeOssAuth:
@@ -56,6 +57,44 @@ def _install_fake_oss2(monkeypatch) -> type[_FakeOssBucket]:
     fake_oss2 = SimpleNamespace(Auth=_FakeOssAuth, Bucket=_FakeOssBucket)
     monkeypatch.setitem(sys.modules, "oss2", fake_oss2)
     return _FakeOssBucket
+
+
+class _FakeS3Client:
+    """Fake boto3 S3 client that records upload and presign calls."""
+
+    instances: list["_FakeS3Client"] = []
+
+    def __init__(self) -> None:
+        """Register this fake S3 client instance."""
+        self.upload_file = Mock()
+        self.generate_presigned_url = Mock(
+            return_value="https://bucket.r2.example.com/signed.mp3?sig=1"
+        )
+        self.instances.append(self)
+
+
+class _FakeBoto3:
+    """Fake boto3 module with a client factory for tests."""
+
+    clients: list[_FakeS3Client] = []
+    client_calls: list[dict[str, object]] = []
+
+    @staticmethod
+    def client(service_name: str, **kwargs) -> _FakeS3Client:
+        """Return a fake S3 client and record constructor kwargs."""
+        _FakeBoto3.client_calls.append({"service_name": service_name, **kwargs})
+        client = _FakeS3Client()
+        _FakeBoto3.clients.append(client)
+        return client
+
+
+def _install_fake_boto3(monkeypatch) -> type[_FakeBoto3]:
+    """Install a fake boto3 module for non-live S3/R2 tests."""
+    _FakeBoto3.clients = []
+    _FakeBoto3.client_calls = []
+    _FakeS3Client.instances = []
+    monkeypatch.setitem(sys.modules, "boto3", _FakeBoto3)
+    return _FakeBoto3
 
 
 def _empty_memory() -> MemoryResponse:
@@ -496,6 +535,159 @@ def test_asr_oss_url_can_return_public_oss_url(tmp_path, monkeypatch) -> None:
 
     assert audio_ref == "https://cdn.example.com/audio/speechan/audio/sample.mp3"
     bucket_cls.instances[0].sign_url.assert_not_called()
+
+
+def test_asr_s3_url_requires_s3_config(tmp_path) -> None:
+    """S3 mode validates required S3-compatible settings before upload."""
+    audio_path = tmp_path / "sample.mp3"
+    audio_path.write_bytes(b"fake audio")
+
+    with pytest.raises(ValueError, match="Missing: S3_ACCESS_KEY_ID"):
+        asyncio.run(
+            build_asr_audio_ref(
+                str(audio_path),
+                Settings(
+                    QWEN_ASR_AUDIO_REF_MODE="s3_url",
+                    S3_ACCESS_KEY_ID="",
+                    S3_SECRET_ACCESS_KEY="",
+                    S3_ENDPOINT_URL="",
+                    S3_BUCKET="",
+                ),
+            )
+        )
+
+
+def test_asr_s3_url_uploads_file_and_returns_presigned_url(tmp_path, monkeypatch) -> None:
+    """S3 mode uploads audio and returns a presigned URL."""
+    fake_boto3 = _install_fake_boto3(monkeypatch)
+    audio_path = tmp_path / "sample.mp3"
+    audio_path.write_bytes(b"fake audio")
+    settings = Settings(
+        QWEN_ASR_AUDIO_REF_MODE="s3_url",
+        S3_ACCESS_KEY_ID="id",
+        S3_SECRET_ACCESS_KEY="secret",
+        S3_ENDPOINT_URL="https://r2.example.com",
+        S3_BUCKET="bucket",
+        S3_REGION="auto",
+        S3_PREFIX="speechan/audio/",
+        S3_SIGNED_URL_EXPIRES_SECONDS=900,
+    )
+
+    audio_ref = asyncio.run(build_asr_audio_ref(str(audio_path), settings))
+
+    client = fake_boto3.clients[0]
+    assert audio_ref == "https://bucket.r2.example.com/signed.mp3?sig=1"
+    assert fake_boto3.client_calls[0]["service_name"] == "s3"
+    client.upload_file.assert_called_once_with(
+        str(audio_path),
+        "bucket",
+        "speechan/audio/sample.mp3",
+        ExtraArgs={"ContentType": "audio/mpeg"},
+    )
+    client.generate_presigned_url.assert_called_once_with(
+        "get_object",
+        Params={"Bucket": "bucket", "Key": "speechan/audio/sample.mp3"},
+        ExpiresIn=900,
+    )
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_content_type"),
+    [
+        ("sample.mp3", "audio/mpeg"),
+        ("sample.m4a", "audio/mp4"),
+        ("sample.wav", "audio/wav"),
+        ("sample.webm", "audio/webm"),
+    ],
+)
+def test_asr_s3_url_sets_content_type_per_extension(
+    tmp_path,
+    monkeypatch,
+    filename: str,
+    expected_content_type: str,
+) -> None:
+    """S3 upload sets the expected audio content type by extension."""
+    fake_boto3 = _install_fake_boto3(monkeypatch)
+    audio_path = tmp_path / filename
+    audio_path.write_bytes(b"fake audio")
+    settings = Settings(
+        QWEN_ASR_AUDIO_REF_MODE="s3_url",
+        S3_ACCESS_KEY_ID="id",
+        S3_SECRET_ACCESS_KEY="secret",
+        S3_ENDPOINT_URL="https://r2.example.com",
+        S3_BUCKET="bucket",
+    )
+
+    asyncio.run(build_asr_audio_ref(str(audio_path), settings))
+
+    _, args, kwargs = fake_boto3.clients[0].upload_file.mock_calls[0]
+    assert args[2] == f"speechan/audio/{filename}"
+    assert kwargs["ExtraArgs"] == {"ContentType": expected_content_type}
+
+
+def test_asr_s3_url_can_return_public_url(tmp_path, monkeypatch) -> None:
+    """S3 mode can return a public base URL instead of a presigned URL."""
+    fake_boto3 = _install_fake_boto3(monkeypatch)
+    audio_path = tmp_path / "sample.mp3"
+    audio_path.write_bytes(b"fake audio")
+    settings = Settings(
+        QWEN_ASR_AUDIO_REF_MODE="s3_url",
+        S3_ACCESS_KEY_ID="id",
+        S3_SECRET_ACCESS_KEY="secret",
+        S3_ENDPOINT_URL="https://r2.example.com",
+        S3_BUCKET="bucket",
+        S3_PUBLIC_BASE_URL="https://pub.example.com/audio",
+        S3_PREFIX="speechan/audio/",
+    )
+
+    audio_ref = asyncio.run(build_asr_audio_ref(str(audio_path), settings))
+
+    assert audio_ref == "https://pub.example.com/audio/speechan/audio/sample.mp3"
+    fake_boto3.clients[0].generate_presigned_url.assert_not_called()
+
+
+def test_asr_s3_url_rejects_non_https_url(tmp_path, monkeypatch) -> None:
+    """S3 mode rejects non-HTTPS public or presigned URLs."""
+    fake_boto3 = _install_fake_boto3(monkeypatch)
+    audio_path = tmp_path / "sample.mp3"
+    audio_path.write_bytes(b"fake audio")
+    fake_boto3.clients = []
+    settings = Settings(
+        QWEN_ASR_AUDIO_REF_MODE="s3_url",
+        S3_ACCESS_KEY_ID="id",
+        S3_SECRET_ACCESS_KEY="secret",
+        S3_ENDPOINT_URL="https://r2.example.com",
+        S3_BUCKET="bucket",
+        S3_PUBLIC_BASE_URL="http://pub.example.com/audio",
+    )
+
+    with pytest.raises(ValueError, match="must start with https://"):
+        asyncio.run(build_asr_audio_ref(str(audio_path), settings))
+
+
+def test_asr_oss_url_rejects_non_https_url(tmp_path, monkeypatch) -> None:
+    """OSS mode rejects non-HTTPS public or signed URLs."""
+    _install_fake_oss2(monkeypatch)
+    audio_path = tmp_path / "sample.mp3"
+    audio_path.write_bytes(b"fake audio")
+    settings = Settings(
+        QWEN_ASR_AUDIO_REF_MODE="oss_url",
+        ALIBABA_OSS_ACCESS_KEY_ID="id",
+        ALIBABA_OSS_ACCESS_KEY_SECRET="secret",
+        ALIBABA_OSS_ENDPOINT="https://oss.example.com",
+        ALIBABA_OSS_BUCKET="bucket",
+        ALIBABA_OSS_PUBLIC_BASE_URL="http://cdn.example.com/audio",
+    )
+
+    with pytest.raises(ValueError, match="must start with https://"):
+        asyncio.run(build_asr_audio_ref(str(audio_path), settings))
+
+
+def test_diagnostic_safe_audio_ref_drops_signed_query_params() -> None:
+    """Diagnostic printing removes signed URL query parameters."""
+    signed_url = "https://bucket.r2.example.com/signed.mp3?X-Amz-Signature=secret"
+
+    assert _safe_audio_ref(signed_url) == "https://bucket.r2.example.com/signed.mp3"
 
 
 def test_asr_parser_extracts_content_string() -> None:

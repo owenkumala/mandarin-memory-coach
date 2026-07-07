@@ -53,6 +53,7 @@ def upload_audio_to_oss(audio_path: str, settings: Settings) -> OssAudioReferenc
             object_key,
             settings.ALIBABA_OSS_SIGNED_URL_EXPIRES_SECONDS,
         )
+    _validate_https_url(url)
     return OssAudioReference(object_key=object_key, url=url)
 
 
@@ -89,6 +90,12 @@ def _oss_object_key(filename: str, prefix: str) -> str:
 def _join_url(base_url: str, path: str) -> str:
     """Join public OSS base URL and object key without double slashes."""
     return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def _validate_https_url(url: str) -> None:
+    """Require HTTPS URLs because Qwen ASR fetches audio server-side."""
+    if not url.startswith("https://"):
+        raise ValueError("Alibaba OSS ASR audio URL must start with https://.")
 
 
 def _load_oss2() -> ModuleType:

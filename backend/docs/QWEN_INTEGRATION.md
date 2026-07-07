@@ -24,7 +24,7 @@ QWEN_ASR_MODEL=qwen3-asr-flash
 QWEN_ASR_LANGUAGE=zh
 QWEN_ASR_ENABLE_LID=true
 QWEN_ASR_ENABLE_ITN=false
-QWEN_ASR_AUDIO_REF_MODE=oss_url
+QWEN_ASR_AUDIO_REF_MODE=s3_url
 PUBLIC_BACKEND_BASE_URL=
 ALIBABA_OSS_ACCESS_KEY_ID=
 ALIBABA_OSS_ACCESS_KEY_SECRET=
@@ -33,6 +33,14 @@ ALIBABA_OSS_BUCKET=
 ALIBABA_OSS_PUBLIC_BASE_URL=
 ALIBABA_OSS_PREFIX=speechan/audio/
 ALIBABA_OSS_SIGNED_URL_EXPIRES_SECONDS=900
+S3_ACCESS_KEY_ID=
+S3_SECRET_ACCESS_KEY=
+S3_ENDPOINT_URL=
+S3_BUCKET=
+S3_REGION=auto
+S3_PUBLIC_BASE_URL=
+S3_PREFIX=speechan/audio/
+S3_SIGNED_URL_EXPIRES_SECONDS=900
 QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
 QWEN_ASR_MAX_RETRIES=0
 QWEN_REQUEST_TIMEOUT_SECONDS=30
@@ -92,14 +100,19 @@ key.
 
 Ngrok/FastAPI `public_url` mode also failed in manual testing with
 `Missing Content-Length of multimodal url`, even though `curl -I` saw
-`content-length`. For the real-ASR demo, use `QWEN_ASR_AUDIO_REF_MODE=oss_url`.
-The backend uploads the saved audio file to Alibaba OSS and passes a signed or
-public OSS HTTPS URL to Qwen ASR. This also strengthens the Alibaba Cloud proof
-for the hackathon.
+`content-length`.
 
-`public_url` remains available for deployed/static hosting that Qwen's
+Alibaba OSS remains the preferred final provider because it strengthens the
+Alibaba Cloud proof for the hackathon. While OSS setup is blocked externally,
+Cloudflare R2 can be used as a temporary S3-compatible fallback with
+`QWEN_ASR_AUDIO_REF_MODE=s3_url`. The backend uploads the saved audio file to
+R2/S3-compatible storage and passes a signed or public HTTPS URL to Qwen ASR.
+Switch back to `oss_url` when Alibaba OSS is available.
+
+`public_url` remains available only for deployed/static hosting that Qwen's
 server-side fetcher accepts. `local_path` and `file_url` remain diagnostic modes
-only.
+only. Signed URLs must not be printed with query parameters because those query
+strings can contain signature data.
 
 `qwen3-asr-flash-realtime` is a WebSocket streaming model and is not implemented
 yet. This backend currently implements upload-style ASR with `qwen3-asr-flash`.
@@ -128,6 +141,7 @@ First run the ASR diagnostic script:
 cd backend
 python3 scripts/check_qwen_asr.py
 python3 scripts/check_qwen_asr.py sample-mandarin.m4a
+python3 scripts/check_qwen_asr.py --audio-ref-mode s3_url sample-mandarin.mp3
 python3 scripts/check_qwen_asr.py --audio-ref-mode oss_url sample-mandarin.mp3
 python3 scripts/check_qwen_asr.py --audio-ref-mode local_path sample-mandarin.m4a
 ```
@@ -178,3 +192,7 @@ Expected response:
 If `QWEN_ASR_AUDIO_REF_MODE=oss_url`, the backend uploads the audio to OSS and
 uses either `ALIBABA_OSS_PUBLIC_BASE_URL + object_key` or a signed URL from
 `bucket.sign_url("GET", object_key, expires)`.
+
+If `QWEN_ASR_AUDIO_REF_MODE=s3_url`, the backend uploads the audio to
+S3-compatible storage such as Cloudflare R2 and uses either
+`S3_PUBLIC_BASE_URL + object_key` or a presigned GET URL.

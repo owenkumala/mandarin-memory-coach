@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     ALIBABA_OSS_PUBLIC_BASE_URL: str = ""
     ALIBABA_OSS_PREFIX: str = "speechan/audio/"
     ALIBABA_OSS_SIGNED_URL_EXPIRES_SECONDS: int = 900
+    S3_ACCESS_KEY_ID: str = ""
+    S3_SECRET_ACCESS_KEY: str = ""
+    S3_ENDPOINT_URL: str = ""
+    S3_BUCKET: str = ""
+    S3_REGION: str = "auto"
+    S3_PUBLIC_BASE_URL: str = ""
+    S3_PREFIX: str = "speechan/audio/"
+    S3_SIGNED_URL_EXPIRES_SECONDS: int = 900
     USE_FAKE_QWEN: bool = True
     USE_FAKE_ASR: bool = True
     QWEN_API_KEY: str = ""
@@ -41,10 +49,10 @@ class Settings(BaseSettings):
     QWEN_ASR_REQUEST_TIMEOUT_SECONDS: float = 30.0
     QWEN_ASR_MAX_RETRIES: int = 0
     QWEN_TTS_MODEL: str = ""
-    QWEN_REQUEST_TIMEOUT_SECONDS: float = 45.0
+    QWEN_REQUEST_TIMEOUT_SECONDS: float = 30.0
     QWEN_MAX_TUTOR_TOKENS: int = 180
     QWEN_MAX_ANALYSIS_TOKENS: int = 650
-    QWEN_MAX_TURN_TOKENS: int = 900
+    QWEN_MAX_TURN_TOKENS: int = 500
     QWEN_MAX_RETRIES: int = 0
     MAX_AUDIO_UPLOAD_BYTES: int = 5_000_000
 

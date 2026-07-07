@@ -26,6 +26,7 @@ from app.services.qwen_client import (  # noqa: E402
     parse_dashscope_asr_response,
 )
 from app.services.oss_audio_service import upload_audio_to_oss  # noqa: E402
+from app.services.s3_audio_service import upload_audio_to_s3  # noqa: E402
 
 DEFAULT_AUDIO_URL = "https://dashscope.oss-cn-beijing.aliyuncs.com/audios/welcome.mp3"
 
@@ -41,7 +42,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--audio-ref-mode",
-        choices=("oss_url", "public_url", "local_path", "file_url"),
+        choices=("oss_url", "s3_url", "public_url", "local_path", "file_url"),
         help="Override QWEN_ASR_AUDIO_REF_MODE for this diagnostic run.",
     )
     args = parser.parse_args()
@@ -76,6 +77,11 @@ async def _audio_ref(audio_arg: str, settings: Settings) -> str:
         print(f"oss_object_key={result.object_key}")
         print(f"oss_url_host_path={_url_host_path(result.url)}")
         return result.url
+    if settings.QWEN_ASR_AUDIO_REF_MODE.strip().lower() == "s3_url":
+        result = await asyncio.to_thread(upload_audio_to_s3, str(Path(audio_arg)), settings)
+        print(f"s3_object_key={result.object_key}")
+        print(f"s3_url_host_path={_url_host_path(result.url)}")
+        return result.url
 
     try:
         return _build_asr_audio_ref(str(Path(audio_arg)), settings)
@@ -109,8 +115,18 @@ def _print_config(settings: Settings, audio_ref: str) -> None:
     print(f"QWEN_ASR_MODEL={settings.QWEN_ASR_MODEL}")
     print(f"QWEN_ASR_AUDIO_REF_MODE={settings.QWEN_ASR_AUDIO_REF_MODE}")
     print(f"PUBLIC_BACKEND_BASE_URL={settings.PUBLIC_BACKEND_BASE_URL}")
+    print(f"S3_ENDPOINT_URL={settings.S3_ENDPOINT_URL}")
+    print(f"S3_BUCKET={settings.S3_BUCKET}")
+    print(f"S3_PUBLIC_BASE_URL={settings.S3_PUBLIC_BASE_URL}")
     print(f"key_source_used={key_source}")
-    print(f"audio_ref={audio_ref}")
+    print(f"audio_ref={_safe_audio_ref(audio_ref)}")
+
+
+def _safe_audio_ref(audio_ref: str) -> str:
+    """Print signed URLs without query parameters that may contain signatures."""
+    if audio_ref.startswith(("http://", "https://")):
+        return _url_host_path(audio_ref)
+    return audio_ref
 
 
 def _response_to_printable(response: object) -> object:

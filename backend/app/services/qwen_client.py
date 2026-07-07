@@ -27,6 +27,7 @@ from app.schemas import (
     WeaknessCategory,
 )
 from app.services.oss_audio_service import upload_audio_to_oss
+from app.services.s3_audio_service import upload_audio_to_s3
 from app.utils.audio import storage_url
 
 logger = logging.getLogger(__name__)
@@ -355,6 +356,10 @@ async def build_asr_audio_ref(audio_path: str, settings: Settings) -> str:
         result = await asyncio.to_thread(upload_audio_to_oss, str(path), settings)
         logger.info("qwen.asr_oss_object_key=%s", result.object_key)
         return result.url
+    if audio_ref_mode == "s3_url":
+        result = await asyncio.to_thread(upload_audio_to_s3, str(path), settings)
+        logger.info("qwen.asr_s3_object_key=%s", result.object_key)
+        return result.url
     if audio_ref_mode == "public_url":
         return _public_audio_url(str(path), settings)
     if audio_ref_mode == "local_path":
@@ -362,7 +367,7 @@ async def build_asr_audio_ref(audio_path: str, settings: Settings) -> str:
     if audio_ref_mode == "file_url":
         return path.resolve().as_uri()
     raise ValueError(
-        "QWEN_ASR_AUDIO_REF_MODE must be one of: oss_url, public_url, "
+        "QWEN_ASR_AUDIO_REF_MODE must be one of: oss_url, s3_url, public_url, "
         "local_path, file_url."
     )
 
@@ -384,8 +389,10 @@ def _build_asr_audio_ref(audio_path: str, settings: Settings) -> str:
         return path.resolve().as_uri()
     if audio_ref_mode == "oss_url":
         raise ValueError("Use build_asr_audio_ref for QWEN_ASR_AUDIO_REF_MODE=oss_url.")
+    if audio_ref_mode == "s3_url":
+        raise ValueError("Use build_asr_audio_ref for QWEN_ASR_AUDIO_REF_MODE=s3_url.")
     raise ValueError(
-        "QWEN_ASR_AUDIO_REF_MODE must be one of: oss_url, public_url, "
+        "QWEN_ASR_AUDIO_REF_MODE must be one of: oss_url, s3_url, public_url, "
         "local_path, file_url."
     )
 
@@ -510,6 +517,10 @@ def _safe_error_detail(value: object, settings: Settings) -> object:
         text = text.replace(settings.ALIBABA_OSS_ACCESS_KEY_ID, "[redacted]")
     if settings.ALIBABA_OSS_ACCESS_KEY_SECRET:
         text = text.replace(settings.ALIBABA_OSS_ACCESS_KEY_SECRET, "[redacted]")
+    if settings.S3_ACCESS_KEY_ID:
+        text = text.replace(settings.S3_ACCESS_KEY_ID, "[redacted]")
+    if settings.S3_SECRET_ACCESS_KEY:
+        text = text.replace(settings.S3_SECRET_ACCESS_KEY, "[redacted]")
     if len(text) > 500:
         text = f"{text[:500]}..."
     return text

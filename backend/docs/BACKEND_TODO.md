@@ -34,6 +34,9 @@ SpeakHan / Mandarin Memory Coach project.
 - [ ] Run `python3 scripts/check_qwen_asr.py` to confirm ASR key/endpoint.
 - [ ] Fill Alibaba OSS env vars before real-ASR voice-chat demo.
 - [ ] Confirm `QWEN_ASR_AUDIO_REF_MODE=oss_url` works with uploaded demo audio.
+- [ ] Use temporary `QWEN_ASR_AUDIO_REF_MODE=s3_url` only while Alibaba OSS setup
+      is blocked.
+- [ ] Switch ASR audio hosting back to Alibaba OSS before final submission.
 - [ ] Confirm demo user memory should be reset or use a fresh `user_id`.
 
 ## Next Backend Tasks
