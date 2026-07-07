@@ -31,6 +31,7 @@ from app.services.s3_audio_service import upload_audio_to_s3
 from app.utils.audio import storage_url
 
 logger = logging.getLogger(__name__)
+SUPPORTED_TTS_OUTPUT_FORMATS = {"mp3", "wav"}
 
 ANALYSIS_JSON_EXAMPLE = {
     "mistakes": [
@@ -226,8 +227,15 @@ class QwenClient:
         return parse_tutor_turn_json(_extract_chat_content(response))
 
     async def synthesize_speech(self, text: str, output_path: str) -> str | None:
-        """Return no tutor audio until real TTS is integrated later."""
-        return None
+        """Synthesize tutor reply audio through fake mode or DashScope TTS."""
+        if self.settings.USE_FAKE_TTS:
+            return None
+
+        return await run_dashscope_tts(
+            settings=self.settings,
+            text=text,
+            output_path=output_path,
+        )
 
     def _real_client(self) -> AsyncOpenAI:
         """Validate real-Qwen settings and return an OpenAI-compatible client."""
@@ -334,6 +342,87 @@ def _asr_api_key(settings: Settings) -> tuple[str, str]:
     if settings.QWEN_API_KEY.strip():
         return settings.QWEN_API_KEY, "QWEN_API_KEY"
     raise ValueError("Qwen ASR requires DASHSCOPE_API_KEY or QWEN_API_KEY.")
+
+
+def _tts_api_key(settings: Settings) -> tuple[str, str]:
+    """Return the TTS API key and safe source name using documented precedence."""
+    if settings.DASHSCOPE_API_KEY.strip():
+        return settings.DASHSCOPE_API_KEY, "DASHSCOPE_API_KEY"
+    if settings.QWEN_API_KEY.strip():
+        return settings.QWEN_API_KEY, "QWEN_API_KEY"
+    raise ValueError("Qwen TTS requires DASHSCOPE_API_KEY or QWEN_API_KEY.")
+
+
+async def run_dashscope_tts(settings: Settings, text: str, output_path: str) -> str:
+    """Run DashScope HTTP TTS and save streaming audio bytes locally."""
+    return await asyncio.to_thread(_run_dashscope_tts_sync, settings, text, output_path)
+
+
+def _run_dashscope_tts_sync(settings: Settings, text: str, output_path: str) -> str:
+    """Call DashScope HTTP TTS synchronously and write the generated audio file."""
+    api_key, key_source = _tts_api_key(settings)
+    model = settings.QWEN_TTS_MODEL.strip()
+    voice = settings.QWEN_TTS_VOICE.strip()
+    output_format = _tts_output_format(settings)
+    if not model:
+        raise ValueError("Qwen TTS requires QWEN_TTS_MODEL.")
+    if not voice:
+        raise ValueError("Qwen TTS requires QWEN_TTS_VOICE.")
+    if not text.strip():
+        raise ValueError("Qwen TTS text was empty.")
+
+    started_at = time.perf_counter()
+    logger.info(
+        "qwen.tts_request model=%s voice=%s key_source=%s tts_base_url_set=%s format=%s",
+        model,
+        voice,
+        key_source,
+        bool(settings.QWEN_TTS_BASE_URL.strip()),
+        output_format,
+    )
+    try:
+        # HttpSpeechSynthesizer is the official DashScope SDK HTTP TTS client.
+        # Streaming mode returns audio bytes directly, avoiding temporary signed URLs.
+        result_parts = dashscope.HttpSpeechSynthesizer.call(
+            model=model,
+            text=text,
+            voice=voice,
+            audio_format=output_format,
+            stream=True,
+            api_key=api_key,
+            url=settings.QWEN_TTS_BASE_URL.strip() or None,
+        )
+        audio_bytes = b"".join(
+            part.audio_data
+            for part in result_parts
+            if getattr(part, "audio_data", None)
+        )
+        if not audio_bytes:
+            raise ValueError("Qwen TTS response audio data was empty.")
+
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(audio_bytes)
+    except (DashScopeException, RequestException, RuntimeError, OSError) as exc:
+        logger.warning(
+            "qwen.tts_dashscope_exception model=%s key_source=%s details=%s",
+            model,
+            key_source,
+            _safe_error_detail(str(exc), settings),
+        )
+        raise ValueError("Qwen TTS request failed.") from exc
+    finally:
+        elapsed = time.perf_counter() - started_at
+        logger.info("qwen.tts_seconds=%.2f model=%s", elapsed, model)
+    return str(path)
+
+
+def _tts_output_format(settings: Settings) -> str:
+    """Return a browser-friendly TTS output format supported by the MVP."""
+    output_format = settings.QWEN_TTS_OUTPUT_FORMAT.strip().lower() or "mp3"
+    if output_format not in SUPPORTED_TTS_OUTPUT_FORMATS:
+        raise ValueError("QWEN_TTS_OUTPUT_FORMAT must be one of: mp3, wav.")
+    return output_format
 
 
 def _dashscope_base_address_kwargs(settings: Settings) -> dict[str, str]:

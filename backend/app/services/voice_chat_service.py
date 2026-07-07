@@ -144,9 +144,13 @@ async def _generate_tutor_audio_url(
     tutor_reply: str,
     user_id: str,
 ) -> str | None:
-    """Run fake/future TTS and convert a generated file path to a storage URL."""
+    """Run optional TTS and convert a generated file path to a storage URL."""
     settings = get_settings()
-    tutor_audio_path = build_audio_file_path(settings.TUTOR_AUDIO_DIR, user_id, "reply.mp3")
+    tutor_audio_path = build_audio_file_path(
+        settings.TUTOR_AUDIO_DIR,
+        user_id,
+        f"reply.{_tutor_audio_extension(settings.QWEN_TTS_OUTPUT_FORMAT)}",
+    )
     synthesized_path = await qwen_client.synthesize_speech(
         tutor_reply,
         str(tutor_audio_path),
@@ -154,6 +158,14 @@ async def _generate_tutor_audio_url(
     if synthesized_path is None:
         return None
     return storage_url(synthesized_path, settings.STORAGE_DIR)
+
+
+def _tutor_audio_extension(output_format: str) -> str:
+    """Return the tutor audio extension used for the saved response file."""
+    normalized_format = output_format.strip().lower() or "mp3"
+    if normalized_format == "wav":
+        return "wav"
+    return "mp3"
 
 
 def _log_elapsed(metric_name: str, started_at: float) -> None:

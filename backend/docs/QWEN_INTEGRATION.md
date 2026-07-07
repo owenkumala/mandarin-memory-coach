@@ -15,6 +15,7 @@ Create or update `backend/.env` with:
 ```text
 USE_FAKE_QWEN=false
 USE_FAKE_ASR=true
+USE_FAKE_TTS=true
 QWEN_API_KEY=...
 DASHSCOPE_API_KEY=
 QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
@@ -43,6 +44,10 @@ S3_PREFIX=speechan/audio/
 S3_SIGNED_URL_EXPIRES_SECONDS=900
 QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
 QWEN_ASR_MAX_RETRIES=0
+QWEN_TTS_MODEL=
+QWEN_TTS_VOICE=
+QWEN_TTS_BASE_URL=
+QWEN_TTS_OUTPUT_FORMAT=mp3
 QWEN_REQUEST_TIMEOUT_SECONDS=30
 QWEN_MAX_TURN_TOKENS=500
 QWEN_MAX_TUTOR_TOKENS=180
@@ -117,6 +122,27 @@ strings can contain signature data.
 `qwen3-asr-flash-realtime` is a WebSocket streaming model and is not implemented
 yet. This backend currently implements upload-style ASR with `qwen3-asr-flash`.
 
+TTS is optional and configured separately with `USE_FAKE_TTS`. When
+`USE_FAKE_TTS=true`, the backend keeps returning `tutor_audio_url=null` and the
+frontend should use browser Web Speech API playback as the fallback. When
+`USE_FAKE_TTS=false`, `synthesize_speech()` uses the Alibaba DashScope SDK
+`HttpSpeechSynthesizer.call(...)` method in streaming mode and writes the audio
+bytes to `backend/storage/tutor_audio/`.
+
+For TTS, set:
+
+```text
+USE_FAKE_TTS=false
+QWEN_TTS_MODEL=<DashScope TTS model, for example a CosyVoice model>
+QWEN_TTS_VOICE=<DashScope voice name supported by that model>
+QWEN_TTS_BASE_URL=https://dashscope-intl.aliyuncs.com/api/v1
+QWEN_TTS_OUTPUT_FORMAT=mp3
+```
+
+`DASHSCOPE_API_KEY` is used first for TTS, then `QWEN_API_KEY`. Do not commit
+real keys. If Qwen/DashScope TTS setup fails during demo prep, keep
+`USE_FAKE_TTS=true` and rely on browser TTS in the frontend.
+
 ## What is real
 
 - `generate_tutor_turn()` calls Qwen once for both tutor reply and structured
@@ -131,7 +157,9 @@ Fake mode and TTS behavior:
 
 - `transcribe_audio()` still returns the MVP transcript `我想吃中国菜` when either
   `USE_FAKE_QWEN=true` or `USE_FAKE_ASR=true`.
-- `synthesize_speech()` still returns `None`.
+- `synthesize_speech()` returns `None` when `USE_FAKE_TTS=true`.
+- `synthesize_speech()` saves tutor audio and returns a local path when
+  `USE_FAKE_TTS=false` and TTS settings are configured.
 
 ## Manual verification
 
@@ -187,7 +215,9 @@ Expected response:
 - `tutor_reply` comes from real Qwen
 - `feedback` comes from real Qwen structured JSON
 - memory, session, and lesson-plan rows still update
-- `tutor_audio_url` remains `null`
+- `tutor_audio_url` is `null` when `USE_FAKE_TTS=true`
+- `tutor_audio_url` points to `/storage/tutor_audio/...` when
+  `USE_FAKE_TTS=false` and DashScope TTS succeeds
 
 If `QWEN_ASR_AUDIO_REF_MODE=oss_url`, the backend uploads the audio to OSS and
 uses either `ALIBABA_OSS_PUBLIC_BASE_URL + object_key` or a signed URL from

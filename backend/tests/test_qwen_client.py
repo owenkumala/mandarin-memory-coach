@@ -22,6 +22,7 @@ from app.services.qwen_client import (
     parse_dashscope_asr_response,
     parse_analysis_json,
     parse_tutor_turn_json,
+    run_dashscope_tts,
     strip_json_code_fence,
 )
 from scripts.check_qwen_asr import _safe_audio_ref
@@ -258,6 +259,79 @@ def test_asr_falls_back_to_qwen_api_key() -> None:
 
     assert api_key == "qwen-key"
     assert key_source == "QWEN_API_KEY"
+
+
+def test_fake_tts_returns_none(tmp_path) -> None:
+    """Fake TTS mode keeps tutor_audio_url null without credentials."""
+    client = QwenClient(settings=Settings(USE_FAKE_TTS=True))
+
+    synthesized_path = asyncio.run(
+        client.synthesize_speech("你好", str(tmp_path / "reply.mp3"))
+    )
+
+    assert synthesized_path is None
+
+
+def test_real_tts_success_with_mocked_dashscope_call(tmp_path, monkeypatch) -> None:
+    """Real TTS uses DashScope HTTP TTS and writes streamed audio bytes."""
+    output_path = tmp_path / "reply.mp3"
+    call_kwargs = {}
+
+    def fake_call(**kwargs):
+        """Return fake streamed TTS chunks without live network."""
+        call_kwargs.update(kwargs)
+        return [
+            SimpleNamespace(audio_data=b"fake-"),
+            SimpleNamespace(audio_data=b"audio"),
+        ]
+
+    monkeypatch.setattr(
+        qwen_client.dashscope.HttpSpeechSynthesizer,
+        "call",
+        staticmethod(fake_call),
+    )
+
+    synthesized_path = asyncio.run(
+        run_dashscope_tts(
+            Settings(
+                USE_FAKE_TTS=False,
+                DASHSCOPE_API_KEY="dash-key",
+                QWEN_API_KEY="qwen-key",
+                QWEN_TTS_MODEL="cosyvoice-v3-flash",
+                QWEN_TTS_VOICE="longxiaochun",
+                QWEN_TTS_BASE_URL="https://dashscope-intl.aliyuncs.com/api/v1",
+                QWEN_TTS_OUTPUT_FORMAT="mp3",
+            ),
+            "欢迎回来！",
+            str(output_path),
+        )
+    )
+
+    assert synthesized_path == str(output_path)
+    assert output_path.read_bytes() == b"fake-audio"
+    assert call_kwargs["model"] == "cosyvoice-v3-flash"
+    assert call_kwargs["voice"] == "longxiaochun"
+    assert call_kwargs["audio_format"] == "mp3"
+    assert call_kwargs["stream"] is True
+    assert call_kwargs["api_key"] == "dash-key"
+    assert call_kwargs["url"] == "https://dashscope-intl.aliyuncs.com/api/v1"
+
+
+def test_real_tts_missing_model_raises_useful_error(tmp_path) -> None:
+    """Real TTS validates required model and voice settings before SDK calls."""
+    with pytest.raises(ValueError, match="Qwen TTS requires QWEN_TTS_MODEL"):
+        asyncio.run(
+            run_dashscope_tts(
+                Settings(
+                    USE_FAKE_TTS=False,
+                    DASHSCOPE_API_KEY="dash-key",
+                    QWEN_TTS_MODEL="",
+                    QWEN_TTS_VOICE="longxiaochun",
+                ),
+                "你好",
+                str(tmp_path / "reply.mp3"),
+            )
+        )
 
 
 def test_asr_missing_both_keys_raises_useful_value_error() -> None:

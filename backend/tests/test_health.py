@@ -33,6 +33,7 @@ from app.services.memory_service import (  # noqa: E402
     get_or_create_user,
     update_active_weaknesses,
 )
+from app.services.qwen_client import QwenClient  # noqa: E402
 
 
 def _post_voice_chat(client: TestClient, user_id: str) -> dict:
@@ -175,6 +176,29 @@ def test_voice_chat_rejects_oversized_audio_file() -> None:
 
     assert response.status_code == 400
     assert "Audio file is too large" in response.json()["detail"]
+
+
+def test_voice_chat_returns_tutor_audio_url_when_tts_succeeds(monkeypatch) -> None:
+    """POST /voice-chat includes tutor_audio_url when mocked TTS saves audio."""
+    async def fake_synthesize_speech(
+        self: QwenClient,
+        text: str,
+        output_path: str,
+    ) -> str:
+        """Write fake tutor audio without calling live DashScope TTS."""
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake tutor audio")
+        return str(path)
+
+    monkeypatch.setattr(QwenClient, "synthesize_speech", fake_synthesize_speech)
+
+    with TestClient(app) as client:
+        body = _post_voice_chat(client, "demo-user-tts-url")
+
+    assert body["tutor_audio_url"] is not None
+    assert body["tutor_audio_url"].startswith("/storage/tutor_audio/")
+    assert body["tutor_audio_url"].endswith(".mp3")
 
 
 def test_repeated_mistake_score_stays_at_or_above_latest_severity() -> None:
