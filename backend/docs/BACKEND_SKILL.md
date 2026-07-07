@@ -108,7 +108,7 @@ QWEN_ASR_MODEL=qwen3-asr-flash
 QWEN_ASR_LANGUAGE=zh
 QWEN_ASR_ENABLE_LID=true
 QWEN_ASR_ENABLE_ITN=false
-QWEN_ASR_AUDIO_REF_MODE=public_url
+QWEN_ASR_AUDIO_REF_MODE=oss_url
 QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
 QWEN_ASR_MAX_RETRIES=0
 QWEN_REQUEST_TIMEOUT_SECONDS=30
@@ -122,6 +122,13 @@ STORAGE_DIR=./storage
 USER_AUDIO_DIR=./storage/user_audio
 TUTOR_AUDIO_DIR=./storage/tutor_audio
 PUBLIC_BACKEND_BASE_URL=
+ALIBABA_OSS_ACCESS_KEY_ID=
+ALIBABA_OSS_ACCESS_KEY_SECRET=
+ALIBABA_OSS_ENDPOINT=
+ALIBABA_OSS_BUCKET=
+ALIBABA_OSS_PUBLIC_BASE_URL=
+ALIBABA_OSS_PREFIX=speechan/audio/
+ALIBABA_OSS_SIGNED_URL_EXPIRES_SECONDS=900
 ```
 
 ### Local run instructions
@@ -175,9 +182,9 @@ Automated tests must not call live Qwen. Keep live Qwen checks manual.
 - Put Qwen calls only in `app/services/qwen_client.py`.
 - Keep `QWEN_BASE_URL` for OpenAI-compatible chat and `QWEN_ASR_BASE_URL` for
   DashScope native ASR overrides.
-- Use `QWEN_ASR_AUDIO_REF_MODE=public_url` for demos, with
-  `PUBLIC_BACKEND_BASE_URL` pointing to a public backend URL that can serve
-  `/storage/...` audio files.
+- Use `QWEN_ASR_AUDIO_REF_MODE=oss_url` for real-ASR demos. Qwen's server-side
+  ASR fetcher accepted OSS/sample HTTPS URLs but rejected ngrok public URLs with
+  `Missing Content-Length of multimodal url`.
 - Put DB logic in `memory_service.py` and `lesson_service.py`.
 - Use explicit Pydantic `response_model` schemas for every endpoint.
 - Keep fake-first external dependencies working.

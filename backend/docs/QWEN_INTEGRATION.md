@@ -24,8 +24,15 @@ QWEN_ASR_MODEL=qwen3-asr-flash
 QWEN_ASR_LANGUAGE=zh
 QWEN_ASR_ENABLE_LID=true
 QWEN_ASR_ENABLE_ITN=false
-QWEN_ASR_AUDIO_REF_MODE=public_url
+QWEN_ASR_AUDIO_REF_MODE=oss_url
 PUBLIC_BACKEND_BASE_URL=
+ALIBABA_OSS_ACCESS_KEY_ID=
+ALIBABA_OSS_ACCESS_KEY_SECRET=
+ALIBABA_OSS_ENDPOINT=
+ALIBABA_OSS_BUCKET=
+ALIBABA_OSS_PUBLIC_BASE_URL=
+ALIBABA_OSS_PREFIX=speechan/audio/
+ALIBABA_OSS_SIGNED_URL_EXPIRES_SECONDS=900
 QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
 QWEN_ASR_MAX_RETRIES=0
 QWEN_REQUEST_TIMEOUT_SECONDS=30
@@ -78,11 +85,21 @@ Manual testing confirmed `qwen3-asr-flash` works with HTTPS audio URLs. The
 Qwen sample URL `https://dashscope.oss-cn-beijing.aliyuncs.com/audios/welcome.mp3`
 returned the transcript `欢迎使用阿里云。`.
 
-Local file paths can fail because the DashScope SDK local-file upload
-certificate flow returned `InvalidApiKey` with this Qwen Cloud key. For demo,
-use `QWEN_ASR_AUDIO_REF_MODE=public_url` and set `PUBLIC_BACKEND_BASE_URL` to a
-publicly reachable backend URL, such as an ngrok URL, a deployed Alibaba Cloud
-ECS URL, or serve/upload the file through OSS.
+`qwen3-asr-flash` requires an HTTPS audio URL accepted by Qwen's server-side
+multimodal fetcher. Local file paths can fail because the DashScope SDK
+local-file upload certificate flow returned `InvalidApiKey` with this Qwen Cloud
+key.
+
+Ngrok/FastAPI `public_url` mode also failed in manual testing with
+`Missing Content-Length of multimodal url`, even though `curl -I` saw
+`content-length`. For the real-ASR demo, use `QWEN_ASR_AUDIO_REF_MODE=oss_url`.
+The backend uploads the saved audio file to Alibaba OSS and passes a signed or
+public OSS HTTPS URL to Qwen ASR. This also strengthens the Alibaba Cloud proof
+for the hackathon.
+
+`public_url` remains available for deployed/static hosting that Qwen's
+server-side fetcher accepts. `local_path` and `file_url` remain diagnostic modes
+only.
 
 `qwen3-asr-flash-realtime` is a WebSocket streaming model and is not implemented
 yet. This backend currently implements upload-style ASR with `qwen3-asr-flash`.
@@ -111,6 +128,7 @@ First run the ASR diagnostic script:
 cd backend
 python3 scripts/check_qwen_asr.py
 python3 scripts/check_qwen_asr.py sample-mandarin.m4a
+python3 scripts/check_qwen_asr.py --audio-ref-mode oss_url sample-mandarin.mp3
 python3 scripts/check_qwen_asr.py --audio-ref-mode local_path sample-mandarin.m4a
 ```
 
@@ -157,6 +175,6 @@ Expected response:
 - memory, session, and lesson-plan rows still update
 - `tutor_audio_url` remains `null`
 
-If `QWEN_ASR_AUDIO_REF_MODE=public_url`, the backend builds the ASR audio
-reference as `PUBLIC_BACKEND_BASE_URL + /storage/...`. Ensure the resulting URL
-is reachable by Alibaba Cloud before the live demo.
+If `QWEN_ASR_AUDIO_REF_MODE=oss_url`, the backend uploads the audio to OSS and
+uses either `ALIBABA_OSS_PUBLIC_BASE_URL + object_key` or a signed URL from
+`bucket.sign_url("GET", object_key, expires)`.

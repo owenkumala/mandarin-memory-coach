@@ -32,9 +32,8 @@ SpeakHan / Mandarin Memory Coach project.
 - [ ] Confirm `qwen-plus` live `/voice-chat` latency remains below 10-15 seconds.
 - [ ] Run manual real-ASR test with short spoken Mandarin audio.
 - [ ] Run `python3 scripts/check_qwen_asr.py` to confirm ASR key/endpoint.
-- [ ] If local audio paths fail, upload audio to OSS or another accessible URL.
-- [ ] Set `PUBLIC_BACKEND_BASE_URL` to ngrok, Alibaba Cloud ECS, or another
-      public backend URL before real-ASR voice-chat demo.
+- [ ] Fill Alibaba OSS env vars before real-ASR voice-chat demo.
+- [ ] Confirm `QWEN_ASR_AUDIO_REF_MODE=oss_url` works with uploaded demo audio.
 - [ ] Confirm demo user memory should be reset or use a fresh `user_id`.
 
 ## Next Backend Tasks

@@ -26,6 +26,7 @@ from app.schemas import (
     MistakeType,
     WeaknessCategory,
 )
+from app.services.oss_audio_service import upload_audio_to_oss
 from app.utils.audio import storage_url
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ class QwenClient:
         if self.settings.USE_FAKE_QWEN or self.settings.USE_FAKE_ASR:
             return "我想吃中国菜"
 
-        audio_ref = _build_asr_audio_ref(audio_path, self.settings)
+        audio_ref = await build_asr_audio_ref(audio_path, self.settings)
         return await run_dashscope_asr(self.settings, audio_ref)
 
     async def generate_tutor_reply(
@@ -341,8 +342,33 @@ def _dashscope_base_address_kwargs(settings: Settings) -> dict[str, str]:
     return {"base_address": settings.QWEN_ASR_BASE_URL.strip()}
 
 
+async def build_asr_audio_ref(audio_path: str, settings: Settings) -> str:
+    """Build the audio reference passed to DashScope ASR without blocking."""
+    path = Path(audio_path)
+    if not path.exists():
+        raise ValueError("Audio file for Qwen ASR was not found.")
+    if not path.is_file():
+        raise ValueError("Audio file for Qwen ASR was not a regular file.")
+
+    audio_ref_mode = settings.QWEN_ASR_AUDIO_REF_MODE.strip().lower()
+    if audio_ref_mode == "oss_url":
+        result = await asyncio.to_thread(upload_audio_to_oss, str(path), settings)
+        logger.info("qwen.asr_oss_object_key=%s", result.object_key)
+        return result.url
+    if audio_ref_mode == "public_url":
+        return _public_audio_url(str(path), settings)
+    if audio_ref_mode == "local_path":
+        return str(path)
+    if audio_ref_mode == "file_url":
+        return path.resolve().as_uri()
+    raise ValueError(
+        "QWEN_ASR_AUDIO_REF_MODE must be one of: oss_url, public_url, "
+        "local_path, file_url."
+    )
+
+
 def _build_asr_audio_ref(audio_path: str, settings: Settings) -> str:
-    """Build the audio reference passed to DashScope ASR."""
+    """Build non-OSS ASR audio references for tests and diagnostics."""
     path = Path(audio_path)
     if not path.exists():
         raise ValueError("Audio file for Qwen ASR was not found.")
@@ -356,8 +382,11 @@ def _build_asr_audio_ref(audio_path: str, settings: Settings) -> str:
         return str(path)
     if audio_ref_mode == "file_url":
         return path.resolve().as_uri()
+    if audio_ref_mode == "oss_url":
+        raise ValueError("Use build_asr_audio_ref for QWEN_ASR_AUDIO_REF_MODE=oss_url.")
     raise ValueError(
-        "QWEN_ASR_AUDIO_REF_MODE must be one of: public_url, local_path, file_url."
+        "QWEN_ASR_AUDIO_REF_MODE must be one of: oss_url, public_url, "
+        "local_path, file_url."
     )
 
 
@@ -477,6 +506,10 @@ def _safe_error_detail(value: object, settings: Settings) -> object:
         text = text.replace(settings.QWEN_API_KEY, "[redacted]")
     if settings.DASHSCOPE_API_KEY:
         text = text.replace(settings.DASHSCOPE_API_KEY, "[redacted]")
+    if settings.ALIBABA_OSS_ACCESS_KEY_ID:
+        text = text.replace(settings.ALIBABA_OSS_ACCESS_KEY_ID, "[redacted]")
+    if settings.ALIBABA_OSS_ACCESS_KEY_SECRET:
+        text = text.replace(settings.ALIBABA_OSS_ACCESS_KEY_SECRET, "[redacted]")
     if len(text) > 500:
         text = f"{text[:500]}..."
     return text

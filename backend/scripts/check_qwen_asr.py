@@ -9,6 +9,7 @@ import argparse
 import asyncio
 from pathlib import Path
 import sys
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -24,6 +25,7 @@ from app.services.qwen_client import (  # noqa: E402
     call_dashscope_asr,
     parse_dashscope_asr_response,
 )
+from app.services.oss_audio_service import upload_audio_to_oss  # noqa: E402
 
 DEFAULT_AUDIO_URL = "https://dashscope.oss-cn-beijing.aliyuncs.com/audios/welcome.mp3"
 
@@ -39,7 +41,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--audio-ref-mode",
-        choices=("public_url", "local_path", "file_url"),
+        choices=("oss_url", "public_url", "local_path", "file_url"),
         help="Override QWEN_ASR_AUDIO_REF_MODE for this diagnostic run.",
     )
     args = parser.parse_args()
@@ -50,10 +52,9 @@ def main() -> None:
         settings = settings.model_copy(
             update={"QWEN_ASR_AUDIO_REF_MODE": args.audio_ref_mode}
         )
-    audio_ref = _audio_ref(args.audio, settings)
-    _print_config(settings=settings, audio_ref=audio_ref)
-
     try:
+        audio_ref = asyncio.run(_audio_ref(args.audio, settings))
+        _print_config(settings=settings, audio_ref=audio_ref)
         response = asyncio.run(call_dashscope_asr(settings, audio_ref))
         print("sanitized_response:")
         print(_safe_error_detail(_response_to_printable(response), settings))
@@ -65,10 +66,16 @@ def main() -> None:
         raise SystemExit(1) from exc
 
 
-def _audio_ref(audio_arg: str, settings: Settings) -> str:
+async def _audio_ref(audio_arg: str, settings: Settings) -> str:
     """Return a direct URL or build the configured local audio reference."""
     if audio_arg.startswith(("http://", "https://")):
         return audio_arg
+
+    if settings.QWEN_ASR_AUDIO_REF_MODE.strip().lower() == "oss_url":
+        result = await asyncio.to_thread(upload_audio_to_oss, str(Path(audio_arg)), settings)
+        print(f"oss_object_key={result.object_key}")
+        print(f"oss_url_host_path={_url_host_path(result.url)}")
+        return result.url
 
     try:
         return _build_asr_audio_ref(str(Path(audio_arg)), settings)
@@ -80,6 +87,12 @@ def _audio_ref(audio_arg: str, settings: Settings) -> str:
                 "Use a public HTTPS URL, ngrok/deployed backend URL, or OSS."
             ) from exc
         raise
+
+
+def _url_host_path(url: str) -> str:
+    """Return URL host/path only so signed query credentials are not printed."""
+    parsed = urlsplit(url)
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
 def _print_config(settings: Settings, audio_ref: str) -> None:

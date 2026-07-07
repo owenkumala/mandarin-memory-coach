@@ -1,6 +1,8 @@
 """Unit tests for fake and real-mode Qwen client helpers."""
 
 import asyncio
+import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from dashscope.common.error import DashScopeException
@@ -16,11 +18,44 @@ from app.services.qwen_client import (
     _build_asr_audio_ref,
     _extract_asr_transcript,
     _safe_error_detail,
+    build_asr_audio_ref,
     parse_dashscope_asr_response,
     parse_analysis_json,
     parse_tutor_turn_json,
     strip_json_code_fence,
 )
+
+
+class _FakeOssAuth:
+    """Capture OSS auth construction without using real credentials."""
+
+    def __init__(self, access_key_id: str, access_key_secret: str) -> None:
+        """Store credential placeholders for assertions if needed."""
+        self.access_key_id = access_key_id
+        self.access_key_secret = access_key_secret
+
+
+class _FakeOssBucket:
+    """Fake oss2 Bucket that records upload and signing calls."""
+
+    instances: list["_FakeOssBucket"] = []
+
+    def __init__(self, auth: _FakeOssAuth, endpoint: str, bucket_name: str) -> None:
+        """Store constructor args and register this fake bucket instance."""
+        self.auth = auth
+        self.endpoint = endpoint
+        self.bucket_name = bucket_name
+        self.put_object_from_file = Mock()
+        self.sign_url = Mock(return_value="https://bucket.oss.example.com/signed.mp3?sig=1")
+        self.instances.append(self)
+
+
+def _install_fake_oss2(monkeypatch) -> type[_FakeOssBucket]:
+    """Install a fake oss2 module for non-live OSS tests."""
+    _FakeOssBucket.instances = []
+    fake_oss2 = SimpleNamespace(Auth=_FakeOssAuth, Bucket=_FakeOssBucket)
+    monkeypatch.setitem(sys.modules, "oss2", fake_oss2)
+    return _FakeOssBucket
 
 
 def _empty_memory() -> MemoryResponse:
@@ -360,6 +395,107 @@ def test_asr_public_url_join_avoids_double_slashes(tmp_path) -> None:
 
     assert audio_ref == "https://demo.example.com/storage/user_audio/sample.m4a"
     assert "com//storage" not in audio_ref
+
+
+def test_asr_oss_url_requires_oss_config(tmp_path) -> None:
+    """OSS mode validates required Alibaba OSS settings before upload."""
+    audio_path = tmp_path / "sample.mp3"
+    audio_path.write_bytes(b"fake audio")
+
+    with pytest.raises(ValueError, match="Missing: ALIBABA_OSS_ACCESS_KEY_ID"):
+        asyncio.run(
+            build_asr_audio_ref(
+                str(audio_path),
+                Settings(
+                    QWEN_ASR_AUDIO_REF_MODE="oss_url",
+                    ALIBABA_OSS_ACCESS_KEY_ID="",
+                    ALIBABA_OSS_ACCESS_KEY_SECRET="",
+                    ALIBABA_OSS_ENDPOINT="",
+                    ALIBABA_OSS_BUCKET="",
+                ),
+            )
+        )
+
+
+def test_asr_oss_url_uploads_file_and_returns_signed_url(tmp_path, monkeypatch) -> None:
+    """OSS mode uploads the local audio file and returns the signed URL."""
+    bucket_cls = _install_fake_oss2(monkeypatch)
+    audio_path = tmp_path / "sample.mp3"
+    audio_path.write_bytes(b"fake audio")
+    settings = Settings(
+        QWEN_ASR_AUDIO_REF_MODE="oss_url",
+        ALIBABA_OSS_ACCESS_KEY_ID="id",
+        ALIBABA_OSS_ACCESS_KEY_SECRET="secret",
+        ALIBABA_OSS_ENDPOINT="https://oss.example.com",
+        ALIBABA_OSS_BUCKET="bucket",
+        ALIBABA_OSS_PREFIX="speechan/audio/",
+        ALIBABA_OSS_SIGNED_URL_EXPIRES_SECONDS=900,
+    )
+
+    audio_ref = asyncio.run(build_asr_audio_ref(str(audio_path), settings))
+
+    bucket = bucket_cls.instances[0]
+    assert audio_ref == "https://bucket.oss.example.com/signed.mp3?sig=1"
+    bucket.put_object_from_file.assert_called_once_with(
+        "speechan/audio/sample.mp3",
+        str(audio_path),
+        headers={"Content-Type": "audio/mpeg"},
+    )
+    bucket.sign_url.assert_called_once_with("GET", "speechan/audio/sample.mp3", 900)
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_content_type"),
+    [
+        ("sample.mp3", "audio/mpeg"),
+        ("sample.m4a", "audio/mp4"),
+        ("sample.wav", "audio/wav"),
+        ("sample.webm", "audio/webm"),
+    ],
+)
+def test_asr_oss_url_sets_content_type_per_extension(
+    tmp_path,
+    monkeypatch,
+    filename: str,
+    expected_content_type: str,
+) -> None:
+    """OSS upload sets the expected audio content type by extension."""
+    bucket_cls = _install_fake_oss2(monkeypatch)
+    audio_path = tmp_path / filename
+    audio_path.write_bytes(b"fake audio")
+    settings = Settings(
+        QWEN_ASR_AUDIO_REF_MODE="oss_url",
+        ALIBABA_OSS_ACCESS_KEY_ID="id",
+        ALIBABA_OSS_ACCESS_KEY_SECRET="secret",
+        ALIBABA_OSS_ENDPOINT="https://oss.example.com",
+        ALIBABA_OSS_BUCKET="bucket",
+    )
+
+    asyncio.run(build_asr_audio_ref(str(audio_path), settings))
+
+    _, _, kwargs = bucket_cls.instances[0].put_object_from_file.mock_calls[0]
+    assert kwargs["headers"] == {"Content-Type": expected_content_type}
+
+
+def test_asr_oss_url_can_return_public_oss_url(tmp_path, monkeypatch) -> None:
+    """OSS mode can return a public base URL instead of a signed URL."""
+    bucket_cls = _install_fake_oss2(monkeypatch)
+    audio_path = tmp_path / "sample.mp3"
+    audio_path.write_bytes(b"fake audio")
+    settings = Settings(
+        QWEN_ASR_AUDIO_REF_MODE="oss_url",
+        ALIBABA_OSS_ACCESS_KEY_ID="id",
+        ALIBABA_OSS_ACCESS_KEY_SECRET="secret",
+        ALIBABA_OSS_ENDPOINT="https://oss.example.com",
+        ALIBABA_OSS_BUCKET="bucket",
+        ALIBABA_OSS_PUBLIC_BASE_URL="https://cdn.example.com/audio",
+        ALIBABA_OSS_PREFIX="speechan/audio/",
+    )
+
+    audio_ref = asyncio.run(build_asr_audio_ref(str(audio_path), settings))
+
+    assert audio_ref == "https://cdn.example.com/audio/speechan/audio/sample.mp3"
+    bucket_cls.instances[0].sign_url.assert_not_called()
 
 
 def test_asr_parser_extracts_content_string() -> None:

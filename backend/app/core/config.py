@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     USER_AUDIO_DIR: str = "./storage/user_audio"
     TUTOR_AUDIO_DIR: str = "./storage/tutor_audio"
     PUBLIC_BACKEND_BASE_URL: str = ""
+    ALIBABA_OSS_ACCESS_KEY_ID: str = ""
+    ALIBABA_OSS_ACCESS_KEY_SECRET: str = ""
+    ALIBABA_OSS_ENDPOINT: str = ""
+    ALIBABA_OSS_BUCKET: str = ""
+    ALIBABA_OSS_PUBLIC_BASE_URL: str = ""
+    ALIBABA_OSS_PREFIX: str = "speechan/audio/"
+    ALIBABA_OSS_SIGNED_URL_EXPIRES_SECONDS: int = 900
     USE_FAKE_QWEN: bool = True
     USE_FAKE_ASR: bool = True
     QWEN_API_KEY: str = ""
@@ -30,7 +37,7 @@ class Settings(BaseSettings):
     QWEN_ASR_LANGUAGE: str = "zh"
     QWEN_ASR_ENABLE_LID: bool = True
     QWEN_ASR_ENABLE_ITN: bool = False
-    QWEN_ASR_AUDIO_REF_MODE: str = "public_url"
+    QWEN_ASR_AUDIO_REF_MODE: str = "oss_url"
     QWEN_ASR_REQUEST_TIMEOUT_SECONDS: float = 30.0
     QWEN_ASR_MAX_RETRIES: int = 0
     QWEN_TTS_MODEL: str = ""
