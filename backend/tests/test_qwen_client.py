@@ -18,6 +18,7 @@ from app.services.qwen_client import (
     _build_asr_audio_ref,
     _extract_asr_transcript,
     _safe_error_detail,
+    _tts_base_url,
     build_asr_audio_ref,
     parse_dashscope_asr_response,
     parse_analysis_json,
@@ -25,7 +26,12 @@ from app.services.qwen_client import (
     run_dashscope_tts,
     strip_json_code_fence,
 )
+from scripts.check_python_certs import (  # noqa: E402
+    _connectivity_result_from_error,
+    print_certificate_diagnostics,
+)
 from scripts.check_qwen_asr import _safe_audio_ref
+from scripts.check_qwen_tts import print_tts_config
 
 
 class _FakeOssAuth:
@@ -272,6 +278,26 @@ def test_fake_tts_returns_none(tmp_path) -> None:
     assert synthesized_path is None
 
 
+def test_tts_base_url_accepts_blank() -> None:
+    """Blank TTS base URL lets the SDK use its default CosyVoice endpoint."""
+    assert _tts_base_url(Settings(QWEN_TTS_BASE_URL="")) is None
+
+
+def test_tts_base_url_accepts_websocket_url() -> None:
+    """Configured TTS base URL must be a websocket endpoint."""
+    url = "wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference"
+
+    assert _tts_base_url(Settings(QWEN_TTS_BASE_URL=url)) == url
+
+
+def test_tts_base_url_rejects_https_url() -> None:
+    """HTTP DashScope API URLs are rejected for CosyVoice websocket TTS."""
+    with pytest.raises(ValueError, match="websocket URL starting with ws:// or wss://"):
+        _tts_base_url(
+            Settings(QWEN_TTS_BASE_URL="https://dashscope-intl.aliyuncs.com/api/v1")
+        )
+
+
 def test_real_tts_success_with_mocked_dashscope_call(tmp_path, monkeypatch) -> None:
     """Real TTS uses DashScope CosyVoice TTS and writes returned audio bytes."""
     output_path = tmp_path / "reply.mp3"
@@ -315,6 +341,41 @@ def test_real_tts_success_with_mocked_dashscope_call(tmp_path, monkeypatch) -> N
     assert init_kwargs["format"] == qwen_client.AudioFormat.MP3_24000HZ_MONO_256KBPS
     assert init_kwargs["url"] is None
     assert call_args == ["欢迎回来！"]
+
+
+def test_real_tts_passes_websocket_base_url(tmp_path, monkeypatch) -> None:
+    """Real TTS passes a configured WSS base URL to the DashScope SDK."""
+    output_path = tmp_path / "reply.mp3"
+    init_kwargs = {}
+
+    class FakeSpeechSynthesizer:
+        """Fake DashScope synthesizer that captures the websocket URL."""
+
+        def __init__(self, **kwargs) -> None:
+            """Capture constructor settings for assertions."""
+            init_kwargs.update(kwargs)
+
+        def call(self, text: str) -> bytes:
+            """Return fake complete audio bytes."""
+            return b"fake-audio"
+
+    monkeypatch.setattr(qwen_client, "SpeechSynthesizer", FakeSpeechSynthesizer)
+
+    asyncio.run(
+        run_dashscope_tts(
+            Settings(
+                USE_FAKE_TTS=False,
+                QWEN_API_KEY="qwen-key",
+                QWEN_TTS_MODEL="cosyvoice-v3-plus",
+                QWEN_TTS_VOICE="longanyang",
+                QWEN_TTS_BASE_URL="wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference",
+            ),
+            "欢迎回来！",
+            str(output_path),
+        )
+    )
+
+    assert init_kwargs["url"] == "wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference"
 
 
 def test_real_tts_type_error_becomes_value_error(tmp_path, monkeypatch) -> None:
@@ -361,6 +422,53 @@ def test_real_tts_missing_model_raises_useful_error(tmp_path) -> None:
                 str(tmp_path / "reply.mp3"),
             )
         )
+
+
+def test_python_cert_diagnostics_do_not_print_secrets(capsys) -> None:
+    """Certificate diagnostics print cert state without leaking API keys."""
+    print_certificate_diagnostics(
+        Settings(
+            QWEN_API_KEY="qwen-secret",
+            DASHSCOPE_API_KEY="dash-secret",
+            SSL_CERT_FILE="",
+            REQUESTS_CA_BUNDLE="",
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert "certifi_where=" in output
+    assert "export SSL_CERT_FILE=" in output
+    assert "qwen-secret" not in output
+    assert "dash-secret" not in output
+
+
+def test_qwen_tts_diagnostics_do_not_print_secrets(capsys) -> None:
+    """TTS diagnostics print key presence flags without leaking key values."""
+    print_tts_config(
+        Settings(
+            USE_FAKE_TTS=False,
+            QWEN_API_KEY="qwen-secret",
+            DASHSCOPE_API_KEY="dash-secret",
+            QWEN_TTS_MODEL="cosyvoice-v3-plus",
+            QWEN_TTS_VOICE="longanyang",
+            QWEN_TTS_BASE_URL="wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference",
+            SSL_CERT_FILE="",
+            REQUESTS_CA_BUNDLE="",
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert "has_QWEN_API_KEY=yes" in output
+    assert "has_DASHSCOPE_API_KEY=yes" in output
+    assert "qwen-secret" not in output
+    assert "dash-secret" not in output
+
+
+def test_python_cert_connectivity_treats_401_as_good() -> None:
+    """A 401-style websocket response means TLS reached DashScope."""
+    message = _connectivity_result_from_error(RuntimeError("401 No API-key provided"))
+
+    assert "WSS connectivity OK" in message
 
 
 def test_asr_missing_both_keys_raises_useful_value_error() -> None:

@@ -361,6 +361,7 @@ async def run_dashscope_tts(settings: Settings, text: str, output_path: str) -> 
 
 def _run_dashscope_tts_sync(settings: Settings, text: str, output_path: str) -> str:
     """Call DashScope non-streaming TTS and write the generated audio file."""
+    tts_base_url = _tts_base_url(settings)
     api_key, key_source = _tts_api_key(settings)
     model = settings.QWEN_TTS_MODEL.strip()
     voice = settings.QWEN_TTS_VOICE.strip()
@@ -390,7 +391,7 @@ def _run_dashscope_tts_sync(settings: Settings, text: str, output_path: str) -> 
             model=model,
             voice=voice,
             format=_tts_audio_format(settings),
-            url=settings.QWEN_TTS_BASE_URL.strip() or None,
+            url=tts_base_url,
         )
         audio_bytes = synthesizer.call(text)
         if not audio_bytes:
@@ -427,6 +428,19 @@ def _tts_output_format(settings: Settings) -> str:
     if output_format not in SUPPORTED_TTS_OUTPUT_FORMATS:
         raise ValueError("QWEN_TTS_OUTPUT_FORMAT must be one of: mp3, wav.")
     return output_format
+
+
+def _tts_base_url(settings: Settings) -> str | None:
+    """Return a validated optional DashScope TTS websocket base URL."""
+    tts_base_url = settings.QWEN_TTS_BASE_URL.strip()
+    if not tts_base_url:
+        return None
+    if tts_base_url.startswith(("ws://", "wss://")):
+        return tts_base_url
+    raise ValueError(
+        "QWEN_TTS_BASE_URL must be blank or a websocket URL starting with "
+        "ws:// or wss://."
+    )
 
 
 def _tts_audio_format(settings: Settings) -> AudioFormat:

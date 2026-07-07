@@ -149,7 +149,10 @@ async def _generate_tutor_audio_url(
     tutor_audio_path = build_audio_file_path(
         settings.TUTOR_AUDIO_DIR,
         user_id,
-        f"reply.{_tutor_audio_extension(settings.QWEN_TTS_OUTPUT_FORMAT)}",
+        (
+            f"reply-{int(time.time() * 1000)}."
+            f"{_tutor_audio_extension(settings.QWEN_TTS_OUTPUT_FORMAT)}"
+        ),
     )
     try:
         synthesized_path = await qwen_client.synthesize_speech(

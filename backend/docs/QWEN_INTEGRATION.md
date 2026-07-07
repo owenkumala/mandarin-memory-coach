@@ -46,7 +46,7 @@ QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
 QWEN_ASR_MAX_RETRIES=0
 QWEN_TTS_MODEL=cosyvoice-v3-plus
 QWEN_TTS_VOICE=longanyang
-QWEN_TTS_BASE_URL=
+QWEN_TTS_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference
 QWEN_TTS_OUTPUT_FORMAT=mp3
 QWEN_REQUEST_TIMEOUT_SECONDS=30
 QWEN_MAX_TURN_TOKENS=500
@@ -135,7 +135,7 @@ For TTS, set:
 USE_FAKE_TTS=false
 QWEN_TTS_MODEL=cosyvoice-v3-plus
 QWEN_TTS_VOICE=longanyang
-QWEN_TTS_BASE_URL=
+QWEN_TTS_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference
 QWEN_TTS_OUTPUT_FORMAT=mp3
 ```
 
@@ -143,15 +143,63 @@ QWEN_TTS_OUTPUT_FORMAT=mp3
 real keys. If Qwen/DashScope TTS setup fails during demo prep, keep
 `USE_FAKE_TTS=true` and rely on browser TTS in the frontend.
 
-Leave `QWEN_TTS_BASE_URL` empty for the official Qwen Cloud CosyVoice example
-unless you have a supported DashScope websocket base URL override. Do not set
-it to the OpenAI-compatible chat URL or the old HTTP TTS URL.
+`QWEN_TTS_BASE_URL` may be blank or a websocket URL. For Qwen Cloud
+international CosyVoice TTS, use:
+
+```text
+QWEN_TTS_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference
+```
+
+Do not use `https://dashscope-intl.aliyuncs.com/api/v1` for TTS; that URL is
+for DashScope native HTTP-style APIs such as upload ASR, while CosyVoice TTS
+uses WSS/WebSocket internally.
 
 If DashScope TTS fails with a local WebSocket/certificate error such as
 `SSL: CERTIFICATE_VERIFY_FAILED`, the `/voice-chat` endpoint keeps returning the
 text tutor reply and sets `tutor_audio_url=null`. This preserves the demo loop;
 the frontend should use browser TTS as the fallback while local certificate or
 DashScope websocket setup is fixed.
+
+## Qwen TTS certificate setup
+
+CosyVoice TTS uses WSS/WebSocket internally. On macOS framework Python installs,
+the WebSocket TLS handshake can fail even when the Qwen key and model are
+correct. Do not disable SSL verification, and do not set `cert_reqs` to
+`ssl.CERT_NONE`.
+
+Install or refresh `certifi`, then point Python clients at its CA bundle:
+
+```bash
+python3 -m pip install --upgrade certifi
+export SSL_CERT_FILE="$(python3 -c 'import certifi; print(certifi.where())')"
+export REQUESTS_CA_BUNDLE="$SSL_CERT_FILE"
+```
+
+For macOS framework Python, the Apple-style certificate installer may also help:
+
+```bash
+open "/Applications/Python 3.14/Install Certificates.command"
+```
+
+Use the matching Python version in that path if your local Python is not 3.14.
+To make the certifi fix permanent, manually add the two `export` lines above to
+`~/.zshrc`.
+
+On Linux or Alibaba Cloud deployment targets, ensure the system CA bundle is
+installed and up to date, for example with the distro `ca-certificates` package.
+
+Two manual diagnostics are available:
+
+```bash
+cd backend
+python3 scripts/check_python_certs.py
+python3 scripts/check_qwen_tts.py
+```
+
+`check_python_certs.py` treats a DashScope 401 `InvalidApiKey` or
+`No API-key provided` response as a good connectivity result because it means
+TLS and network access reached DashScope. The TTS script prints whether keys are
+configured, but never prints key values.
 
 ## What is real
 

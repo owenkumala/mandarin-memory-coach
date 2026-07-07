@@ -1,5 +1,6 @@
 """Endpoint tests for the fake-Qwen SpeakHan backend MVP."""
 
+import asyncio
 import os
 import shutil
 import tempfile
@@ -18,6 +19,7 @@ os.environ["USE_FAKE_TTS"] = "true"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app.core.config import get_settings  # noqa: E402
 from app.db.database import SessionLocal  # noqa: E402
 from app.db import models  # noqa: E402
 from app.main import app  # noqa: E402
@@ -35,6 +37,7 @@ from app.services.memory_service import (  # noqa: E402
     update_active_weaknesses,
 )
 from app.services.qwen_client import QwenClient  # noqa: E402
+from app.services.voice_chat_service import _generate_tutor_audio_url  # noqa: E402
 
 
 def _post_voice_chat(client: TestClient, user_id: str) -> dict:
@@ -221,6 +224,38 @@ def test_voice_chat_keeps_working_when_tts_fails(monkeypatch) -> None:
     assert body["tutor_reply"]
     assert body["tutor_audio_url"] is None
     assert body["memory_updated"] is True
+
+
+def test_tutor_audio_paths_are_unique(monkeypatch) -> None:
+    """Optional TTS writes each generated reply to a unique audio path."""
+    generated_paths = []
+
+    async def fake_synthesize_speech(
+        self: QwenClient,
+        text: str,
+        output_path: str,
+    ) -> str:
+        """Capture generated paths without calling live DashScope TTS."""
+        generated_paths.append(output_path)
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake tutor audio")
+        return str(path)
+
+    monkeypatch.setattr(QwenClient, "synthesize_speech", fake_synthesize_speech)
+
+    qwen_client = QwenClient(settings=get_settings())
+    first_url = asyncio.run(
+        _generate_tutor_audio_url(qwen_client, "你好", "demo-user-unique-tts")
+    )
+    second_url = asyncio.run(
+        _generate_tutor_audio_url(qwen_client, "你好", "demo-user-unique-tts")
+    )
+
+    assert first_url != second_url
+    assert generated_paths[0] != generated_paths[1]
+    assert generated_paths[0].endswith(".mp3")
+    assert generated_paths[1].endswith(".mp3")
 
 
 def test_repeated_mistake_score_stays_at_or_above_latest_severity() -> None:

@@ -13,3 +13,4 @@ openai
 dashscope
 oss2
 boto3
+certifi
