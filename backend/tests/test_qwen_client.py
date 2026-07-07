@@ -557,7 +557,11 @@ def test_real_asr_missing_model_raises_useful_value_error() -> None:
         )
 
 
-def test_real_asr_success_with_mocked_dashscope_call(tmp_path, monkeypatch) -> None:
+def test_real_asr_success_with_mocked_dashscope_call(
+    tmp_path,
+    monkeypatch,
+    caplog,
+) -> None:
     """Real ASR calls DashScope native API through a mocked SDK call."""
     audio_path = tmp_path / "sample.webm"
     audio_path.write_bytes(b"fake audio")
@@ -592,13 +596,18 @@ def test_real_asr_success_with_mocked_dashscope_call(tmp_path, monkeypatch) -> N
         )
     )
 
-    transcript = asyncio.run(client.transcribe_audio(str(audio_path)))
+    with caplog.at_level(logging.INFO, logger="app.services.qwen_client"):
+        transcript = asyncio.run(client.transcribe_audio(str(audio_path)))
 
     assert transcript == "我想吃中国菜"
     assert call_kwargs["api_key"] == "test-key"
     assert call_kwargs["model"] == "qwen-asr-test"
     assert call_kwargs["base_address"] == "https://dashscope-intl.aliyuncs.com/api/v1"
     assert call_kwargs["asr_options"]["language"] == "zh"
+    assert "qwen.asr_audio_ref_mode=local_path bytes=10" in caplog.text
+    assert "qwen.asr_request_start model=qwen-asr-test" in caplog.text
+    assert "qwen.asr_parse_seconds=" in caplog.text
+    assert "qwen.asr_total_seconds=" in caplog.text
 
 
 def test_dashscope_asr_non_200_response_raises_useful_error() -> None:
@@ -827,7 +836,11 @@ def test_asr_s3_url_requires_s3_config(tmp_path) -> None:
         )
 
 
-def test_asr_s3_url_uploads_file_and_returns_presigned_url(tmp_path, monkeypatch) -> None:
+def test_asr_s3_url_uploads_file_and_returns_presigned_url(
+    tmp_path,
+    monkeypatch,
+    caplog,
+) -> None:
     """S3 mode uploads audio and returns a presigned URL."""
     fake_boto3 = _install_fake_boto3(monkeypatch)
     audio_path = tmp_path / "sample.mp3"
@@ -843,7 +856,8 @@ def test_asr_s3_url_uploads_file_and_returns_presigned_url(tmp_path, monkeypatch
         S3_SIGNED_URL_EXPIRES_SECONDS=900,
     )
 
-    audio_ref = asyncio.run(build_asr_audio_ref(str(audio_path), settings))
+    with caplog.at_level(logging.INFO):
+        audio_ref = asyncio.run(build_asr_audio_ref(str(audio_path), settings))
 
     client = fake_boto3.clients[0]
     assert audio_ref == "https://bucket.r2.example.com/signed.mp3?sig=1"
@@ -859,6 +873,11 @@ def test_asr_s3_url_uploads_file_and_returns_presigned_url(tmp_path, monkeypatch
         Params={"Bucket": "bucket", "Key": "speechan/audio/sample.mp3"},
         ExpiresIn=900,
     )
+    assert "s3.upload_audio_seconds=" in caplog.text
+    assert "s3.presigned_url_seconds=" in caplog.text
+    assert "qwen.asr_upload_seconds=" in caplog.text
+    assert "https://bucket.r2.example.com/signed.mp3?sig=1" not in caplog.text
+    assert "secret" not in caplog.text
 
 
 @pytest.mark.parametrize(

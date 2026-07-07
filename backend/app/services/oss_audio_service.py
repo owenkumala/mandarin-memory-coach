@@ -5,10 +5,14 @@ DashScope qwen3-asr-flash can fetch server-side.
 """
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
+import time
 from types import ModuleType
 
 from app.core.config import Settings
+
+logger = logging.getLogger(__name__)
 
 OSS_AUDIO_CONTENT_TYPES = {
     ".mp3": "audio/mpeg",
@@ -43,15 +47,28 @@ def upload_audio_to_oss(audio_path: str, settings: Settings) -> OssAudioReferenc
         settings.ALIBABA_OSS_ACCESS_KEY_SECRET,
     )
     bucket = oss2.Bucket(auth, settings.ALIBABA_OSS_ENDPOINT, settings.ALIBABA_OSS_BUCKET)
+    upload_started_at = time.perf_counter()
     bucket.put_object_from_file(object_key, str(path), headers=headers)
+    logger.info(
+        "oss.upload_audio_seconds=%.2f bytes=%s key=%s",
+        time.perf_counter() - upload_started_at,
+        path.stat().st_size,
+        object_key,
+    )
 
     if settings.ALIBABA_OSS_PUBLIC_BASE_URL.strip():
         url = _join_url(settings.ALIBABA_OSS_PUBLIC_BASE_URL, object_key)
     else:
+        signed_url_started_at = time.perf_counter()
         url = bucket.sign_url(
             "GET",
             object_key,
             settings.ALIBABA_OSS_SIGNED_URL_EXPIRES_SECONDS,
+        )
+        logger.info(
+            "oss.signed_url_seconds=%.2f key=%s",
+            time.perf_counter() - signed_url_started_at,
+            object_key,
         )
     _validate_https_url(url)
     return OssAudioReference(object_key=object_key, url=url)

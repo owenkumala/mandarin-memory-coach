@@ -155,6 +155,7 @@ async def run_diagnostic(args: argparse.Namespace) -> None:
     audio_messages = build_audio_chunk_messages(audio_bytes, args.chunk_size)
     start_message = build_start_message(args.user_id, args.scenario, args.level)
     started_at = time.perf_counter()
+    print("Server-side ASR stage timings are printed in backend logs.", flush=True)
 
     async with websockets.connect(args.url) as websocket:
         await websocket.send(json.dumps(start_message, ensure_ascii=False))

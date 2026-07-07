@@ -174,7 +174,10 @@ async def _handle_end_audio(
 ) -> None:
     """Finish ASR, then run streaming tutor, TTS, feedback, and memory work."""
     state = _require_session(session_state)
+    _log_elapsed("realtime.end_audio_received_seconds", state.started_at)
+    _log_elapsed("realtime.asr_finish_start_seconds", state.started_at)
     asr_result = await state.asr_session.finish()
+    _log_elapsed("realtime.asr_finish_done_seconds", state.started_at)
     await _send_event(
         websocket,
         RealtimeVoiceEvent(

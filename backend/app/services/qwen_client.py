@@ -68,11 +68,27 @@ class QwenClient:
 
     async def transcribe_audio(self, audio_path: str) -> str:
         """Transcribe learner audio through fake mode or real Qwen ASR."""
-        if self.settings.USE_FAKE_QWEN or self.settings.USE_FAKE_ASR:
-            return "我想吃中国菜"
+        started_at = time.perf_counter()
+        audio_ref_mode = self.settings.QWEN_ASR_AUDIO_REF_MODE.strip().lower()
+        logger.info(
+            "qwen.asr_audio_ref_mode=%s bytes=%s fake_qwen=%s fake_asr=%s",
+            audio_ref_mode,
+            _audio_size_for_log(audio_path),
+            self.settings.USE_FAKE_QWEN,
+            self.settings.USE_FAKE_ASR,
+        )
+        try:
+            if self.settings.USE_FAKE_QWEN or self.settings.USE_FAKE_ASR:
+                return "我想吃中国菜"
 
-        audio_ref = await build_asr_audio_ref(audio_path, self.settings)
-        return await run_dashscope_asr(self.settings, audio_ref)
+            audio_ref = await build_asr_audio_ref(audio_path, self.settings)
+            return await run_dashscope_asr(self.settings, audio_ref)
+        finally:
+            logger.info(
+                "qwen.asr_total_seconds=%.2f audio_ref_mode=%s",
+                time.perf_counter() - started_at,
+                audio_ref_mode,
+            )
 
     async def generate_tutor_reply(
         self,
@@ -367,7 +383,15 @@ def _qwen_timeout_message(operation: str, settings: Settings) -> str:
 async def run_dashscope_asr(settings: Settings, audio_ref: str) -> str:
     """Run DashScope native qwen3-asr-flash and return parsed transcript text."""
     response = await call_dashscope_asr(settings, audio_ref)
-    return parse_dashscope_asr_response(response, settings)
+    parse_started_at = time.perf_counter()
+    try:
+        return parse_dashscope_asr_response(response, settings)
+    finally:
+        logger.info(
+            "qwen.asr_parse_seconds=%.2f model=%s",
+            time.perf_counter() - parse_started_at,
+            settings.QWEN_ASR_MODEL,
+        )
 
 
 async def call_dashscope_asr(settings: Settings, audio_ref: str) -> object:
@@ -378,7 +402,7 @@ async def call_dashscope_asr(settings: Settings, audio_ref: str) -> object:
 
     started_at = time.perf_counter()
     logger.info(
-        "qwen.asr_request model=%s key_source=%s asr_base_url_set=%s audio_ref_mode=%s",
+        "qwen.asr_request_start model=%s key_source=%s asr_base_url_set=%s audio_ref_mode=%s",
         settings.QWEN_ASR_MODEL,
         key_source,
         bool(settings.QWEN_ASR_BASE_URL.strip()),
@@ -544,6 +568,14 @@ def _dashscope_base_address_kwargs(settings: Settings) -> dict[str, str]:
     return {"base_address": settings.QWEN_ASR_BASE_URL.strip()}
 
 
+def _audio_size_for_log(audio_path: str) -> int | str:
+    """Return an audio byte count for diagnostics without logging local paths."""
+    path = Path(audio_path)
+    if not path.exists() or not path.is_file():
+        return "unavailable"
+    return path.stat().st_size
+
+
 async def build_asr_audio_ref(audio_path: str, settings: Settings) -> str:
     """Build the audio reference passed to DashScope ASR without blocking."""
     path = Path(audio_path)
@@ -552,25 +584,50 @@ async def build_asr_audio_ref(audio_path: str, settings: Settings) -> str:
     if not path.is_file():
         raise ValueError("Audio file for Qwen ASR was not a regular file.")
 
+    started_at = time.perf_counter()
     audio_ref_mode = settings.QWEN_ASR_AUDIO_REF_MODE.strip().lower()
-    if audio_ref_mode == "oss_url":
-        result = await asyncio.to_thread(upload_audio_to_oss, str(path), settings)
-        logger.info("qwen.asr_oss_object_key=%s", result.object_key)
-        return result.url
-    if audio_ref_mode == "s3_url":
-        result = await asyncio.to_thread(upload_audio_to_s3, str(path), settings)
-        logger.info("qwen.asr_s3_object_key=%s", result.object_key)
-        return result.url
-    if audio_ref_mode == "public_url":
-        return _public_audio_url(str(path), settings)
-    if audio_ref_mode == "local_path":
-        return str(path)
-    if audio_ref_mode == "file_url":
-        return path.resolve().as_uri()
-    raise ValueError(
-        "QWEN_ASR_AUDIO_REF_MODE must be one of: oss_url, s3_url, public_url, "
-        "local_path, file_url."
+    logger.info(
+        "qwen.asr_prepare_audio_ref_start audio_ref_mode=%s bytes=%s",
+        audio_ref_mode,
+        path.stat().st_size,
     )
+    try:
+        if audio_ref_mode == "oss_url":
+            upload_started_at = time.perf_counter()
+            result = await asyncio.to_thread(upload_audio_to_oss, str(path), settings)
+            logger.info(
+                "qwen.asr_upload_seconds=%.2f provider=oss bytes=%s",
+                time.perf_counter() - upload_started_at,
+                path.stat().st_size,
+            )
+            logger.info("qwen.asr_oss_object_key=%s", result.object_key)
+            return result.url
+        if audio_ref_mode == "s3_url":
+            upload_started_at = time.perf_counter()
+            result = await asyncio.to_thread(upload_audio_to_s3, str(path), settings)
+            logger.info(
+                "qwen.asr_upload_seconds=%.2f provider=s3 bytes=%s",
+                time.perf_counter() - upload_started_at,
+                path.stat().st_size,
+            )
+            logger.info("qwen.asr_s3_object_key=%s", result.object_key)
+            return result.url
+        if audio_ref_mode == "public_url":
+            return _public_audio_url(str(path), settings)
+        if audio_ref_mode == "local_path":
+            return str(path)
+        if audio_ref_mode == "file_url":
+            return path.resolve().as_uri()
+        raise ValueError(
+            "QWEN_ASR_AUDIO_REF_MODE must be one of: oss_url, s3_url, public_url, "
+            "local_path, file_url."
+        )
+    finally:
+        logger.info(
+            "qwen.asr_prepare_audio_ref_seconds=%.2f audio_ref_mode=%s",
+            time.perf_counter() - started_at,
+            audio_ref_mode,
+        )
 
 
 def _build_asr_audio_ref(audio_path: str, settings: Settings) -> str:

@@ -5,10 +5,14 @@ OSS setup is blocked. Alibaba OSS remains the intended final provider.
 """
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
+import time
 from types import ModuleType
 
 from app.core.config import Settings
+
+logger = logging.getLogger(__name__)
 
 S3_AUDIO_CONTENT_TYPES = {
     ".mp3": "audio/mpeg",
@@ -45,19 +49,32 @@ def upload_audio_to_s3(audio_path: str, settings: Settings) -> S3AudioReference:
     )
 
     try:
+        upload_started_at = time.perf_counter()
         client.upload_file(
             str(path),
             settings.S3_BUCKET,
             object_key,
             ExtraArgs={"ContentType": content_type},
         )
+        logger.info(
+            "s3.upload_audio_seconds=%.2f bytes=%s key=%s",
+            time.perf_counter() - upload_started_at,
+            path.stat().st_size,
+            object_key,
+        )
         if settings.S3_PUBLIC_BASE_URL.strip():
             url = _join_url(settings.S3_PUBLIC_BASE_URL, object_key)
         else:
+            signed_url_started_at = time.perf_counter()
             url = client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": settings.S3_BUCKET, "Key": object_key},
                 ExpiresIn=settings.S3_SIGNED_URL_EXPIRES_SECONDS,
+            )
+            logger.info(
+                "s3.presigned_url_seconds=%.2f key=%s",
+                time.perf_counter() - signed_url_started_at,
+                object_key,
             )
     except _boto_error_types() as exc:
         raise ValueError("S3-compatible audio upload failed.") from exc

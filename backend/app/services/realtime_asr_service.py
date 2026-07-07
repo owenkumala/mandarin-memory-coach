@@ -6,6 +6,8 @@ behind the same interface when the Qwen realtime ASR contract is clear.
 """
 
 import base64
+import logging
+import time
 from dataclasses import dataclass, field
 
 from app.core.config import Settings
@@ -16,6 +18,8 @@ from app.utils.audio import (
     validate_audio_upload,
     write_audio_bytes,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -73,6 +77,11 @@ class BufferedRealtimeAsrSession(RealtimeAsrSession):
     async def finish(self) -> RealtimeAsrResult:
         """Persist buffered audio and transcribe it through the existing ASR path."""
         audio_content = b"".join(self.chunks)
+        logger.info(
+            "realtime.asr_buffer_bytes=%s chunks=%s",
+            len(audio_content),
+            len(self.chunks),
+        )
         validate_audio_upload(
             "realtime.webm",
             audio_content,
@@ -83,8 +92,21 @@ class BufferedRealtimeAsrSession(RealtimeAsrSession):
             self.user_id,
             "realtime.webm",
         )
+        save_started_at = time.perf_counter()
+        logger.info("realtime.asr_save_audio_start")
         saved_audio_path = await write_audio_bytes(audio_path, audio_content)
+        logger.info(
+            "realtime.asr_save_audio_seconds=%.2f bytes=%s",
+            time.perf_counter() - save_started_at,
+            len(audio_content),
+        )
+        transcribe_started_at = time.perf_counter()
+        logger.info("realtime.asr_transcribe_start")
         transcript = await self.qwen_client.transcribe_audio(saved_audio_path)
+        logger.info(
+            "realtime.asr_transcribe_seconds=%.2f",
+            time.perf_counter() - transcribe_started_at,
+        )
         return RealtimeAsrResult(transcript=transcript, audio_path=saved_audio_path)
 
 

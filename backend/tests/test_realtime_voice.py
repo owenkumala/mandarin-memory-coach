@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import logging
 import os
 from pathlib import Path
 
@@ -75,7 +76,10 @@ def _write_cached_fast_ack(settings: Settings) -> None:
     cached_path.write_bytes(b"cached fast ack audio")
 
 
-def test_realtime_voice_chat_accepts_hsk3_and_emits_ordered_events(monkeypatch) -> None:
+def test_realtime_voice_chat_accepts_hsk3_and_emits_ordered_events(
+    caplog,
+    monkeypatch,
+) -> None:
     """WS /voice-chat/realtime streams events and passes HSK3 into Qwen calls."""
     captured_levels = {}
 
@@ -123,24 +127,25 @@ def test_realtime_voice_chat_accepts_hsk3_and_emits_ordered_events(monkeypatch) 
     monkeypatch.setattr(QwenClient, "analyze_mistakes", fake_analyze_mistakes)
     monkeypatch.setattr(QwenClient, "synthesize_speech", fake_synthesize_speech)
 
-    with TestClient(app) as client:
-        with client.websocket_connect("/api/v1/voice-chat/realtime") as websocket:
-            websocket.send_json(
-                {
-                    "type": "start",
-                    "user_id": "demo-user-realtime-hsk3",
-                    "scenario": "restaurant ordering",
-                    "level": "HSK3 lower intermediate",
-                }
-            )
-            websocket.send_json(
-                {
-                    "type": "audio_chunk",
-                    "audio_base64": base64.b64encode(b"fake audio").decode("ascii"),
-                }
-            )
-            websocket.send_json({"type": "end_audio"})
-            events = _receive_realtime_events_until_done(websocket)
+    with caplog.at_level(logging.INFO, logger="app.services.realtime_asr_service"):
+        with TestClient(app) as client:
+            with client.websocket_connect("/api/v1/voice-chat/realtime") as websocket:
+                websocket.send_json(
+                    {
+                        "type": "start",
+                        "user_id": "demo-user-realtime-hsk3",
+                        "scenario": "restaurant ordering",
+                        "level": "HSK3 lower intermediate",
+                    }
+                )
+                websocket.send_json(
+                    {
+                        "type": "audio_chunk",
+                        "audio_base64": base64.b64encode(b"fake audio").decode("ascii"),
+                    }
+                )
+                websocket.send_json({"type": "end_audio"})
+                events = _receive_realtime_events_until_done(websocket)
 
     event_types = [event["type"] for event in events]
     assert event_types[0] == "session_started"
@@ -162,6 +167,9 @@ def test_realtime_voice_chat_accepts_hsk3_and_emits_ordered_events(monkeypatch) 
     assert memory_event["payload"]["memory_after"]["learner_level"] == (
         "HSK3 lower intermediate"
     )
+    assert "realtime.asr_buffer_bytes=10 chunks=1" in caplog.text
+    assert "realtime.asr_save_audio_seconds=" in caplog.text
+    assert "realtime.asr_transcribe_seconds=" in caplog.text
 
 
 def test_realtime_voice_chat_defaults_missing_level_to_hsk1(monkeypatch) -> None:
