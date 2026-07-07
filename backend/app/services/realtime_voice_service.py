@@ -6,6 +6,7 @@ TTS, and memory updates while preserving the stable REST voice-chat pipeline.
 
 import asyncio
 import logging
+import time
 from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -126,6 +127,7 @@ async def _handle_start(
         level=level,
         asr_session=asr_session,
         memory_before=memory_before,
+        started_at=time.perf_counter(),
     )
     await _send_event(
         websocket,
@@ -140,6 +142,7 @@ async def _handle_start(
             },
         ),
     )
+    _log_elapsed("realtime.session_started", state.started_at)
     for event in await asr_session.start():
         await _send_event(websocket, event)
     return state
@@ -155,6 +158,7 @@ async def _handle_audio_chunk(
     audio_bytes = decode_audio_chunk(message)
     for event in await state.asr_session.accept_audio_chunk(audio_bytes):
         await _send_event(websocket, event)
+        _log_audio_received(state, event)
 
 
 async def _handle_end_audio(
@@ -173,6 +177,7 @@ async def _handle_end_audio(
             payload={"transcript": asr_result.transcript},
         ),
     )
+    _log_elapsed("realtime.asr_final_seconds", state.started_at)
     await _run_tutor_feedback_memory_pipeline(
         db=db,
         qwen_client=qwen_client,
@@ -204,6 +209,9 @@ async def _run_tutor_feedback_memory_pipeline(
         )
     )
     tutor_reply_parts = []
+    analysis: AnalysisResponse | None = None
+    feedback_sent = False
+    memory_sent = False
 
     async for token in qwen_client.stream_tutor_reply(
         transcript=asr_result.transcript,
@@ -212,6 +220,7 @@ async def _run_tutor_feedback_memory_pipeline(
         level=state.level,
     ):
         tutor_reply_parts.append(token)
+        _log_once(state, "first_tutor_token_logged", "realtime.first_tutor_token_seconds")
         await _send_event(
             websocket,
             RealtimeVoiceEvent(
@@ -219,18 +228,141 @@ async def _run_tutor_feedback_memory_pipeline(
                 payload={"text": token},
             ),
         )
-        for event in tts_pipeline.accept_text_chunk(token):
-            await _send_event(websocket, event)
-        for event in await tts_pipeline.drain_ready():
-            await _send_event(websocket, event)
+        await _send_events(websocket, state, tts_pipeline.accept_text_chunk(token))
+        await _send_events(websocket, state, await tts_pipeline.drain_ready())
+        if analysis is None and analysis_task.done():
+            analysis = await analysis_task
+            feedback_sent = await _emit_feedback_ready(
+                websocket=websocket,
+                state=state,
+                analysis=analysis,
+                already_sent=feedback_sent,
+            )
 
-    for event in tts_pipeline.flush():
-        await _send_event(websocket, event)
-    for event in await tts_pipeline.drain_all():
-        await _send_event(websocket, event)
+    await _send_events(websocket, state, tts_pipeline.flush())
 
     tutor_reply = "".join(tutor_reply_parts).strip()
-    analysis = await analysis_task
+    if analysis is None and analysis_task.done():
+        analysis = await analysis_task
+        feedback_sent = await _emit_feedback_ready(
+            websocket=websocket,
+            state=state,
+            analysis=analysis,
+            already_sent=feedback_sent,
+        )
+    if analysis is not None:
+        memory_sent = await _persist_and_emit_memory(
+            db=db,
+            websocket=websocket,
+            state=state,
+            asr_result=asr_result,
+            tutor_reply=tutor_reply,
+            analysis=analysis,
+            already_sent=memory_sent,
+        )
+
+    analysis, feedback_sent, memory_sent = await _finish_analysis_tts_and_memory(
+        db=db,
+        websocket=websocket,
+        state=state,
+        asr_result=asr_result,
+        tutor_reply=tutor_reply,
+        analysis_task=analysis_task,
+        tts_pipeline=tts_pipeline,
+        analysis=analysis,
+        feedback_sent=feedback_sent,
+        memory_sent=memory_sent,
+    )
+    if analysis is None or not memory_sent:
+        raise ValueError("Realtime feedback and memory update did not complete.")
+    await _send_event(
+        websocket,
+        RealtimeVoiceEvent(
+            type=RealtimeVoiceEventType.DONE,
+            payload={"session_id": state.session_id},
+        ),
+    )
+    _log_elapsed("realtime.done_seconds", state.started_at)
+
+
+async def _finish_analysis_tts_and_memory(
+    db: Session,
+    websocket: WebSocket,
+    state: "_RealtimeSessionState",
+    asr_result: RealtimeAsrResult,
+    tutor_reply: str,
+    analysis_task: asyncio.Task[AnalysisResponse],
+    tts_pipeline: SentenceTtsPipeline,
+    analysis: AnalysisResponse | None,
+    feedback_sent: bool,
+    memory_sent: bool,
+) -> tuple[AnalysisResponse | None, bool, bool]:
+    """Drain pending TTS while emitting feedback as soon as analysis finishes."""
+    while tts_pipeline.has_pending_tasks() or analysis is None:
+        waiters: dict[asyncio.Task[object], str] = {}
+        if tts_pipeline.has_pending_tasks():
+            waiters[
+                asyncio.create_task(tts_pipeline.wait_for_next_event())
+            ] = "tts"
+        if analysis is None:
+            waiters[analysis_task] = "analysis"
+
+        done_tasks, pending_tasks = await asyncio.wait(
+            waiters,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        await _cancel_tts_waiters(waiters, pending_tasks)
+
+        for task in done_tasks:
+            if waiters[task] == "tts":
+                events = task.result()
+                if isinstance(events, list):
+                    await _send_events(websocket, state, events)
+                continue
+
+            analysis = task.result()
+            if isinstance(analysis, AnalysisResponse):
+                feedback_sent = await _emit_feedback_ready(
+                    websocket=websocket,
+                    state=state,
+                    analysis=analysis,
+                    already_sent=feedback_sent,
+                )
+                memory_sent = await _persist_and_emit_memory(
+                    db=db,
+                    websocket=websocket,
+                    state=state,
+                    asr_result=asr_result,
+                    tutor_reply=tutor_reply,
+                    analysis=analysis,
+                    already_sent=memory_sent,
+                )
+    return analysis, feedback_sent, memory_sent
+
+
+async def _cancel_tts_waiters(
+    waiters: dict[asyncio.Task[object], str],
+    pending_tasks: set[asyncio.Task[object]],
+) -> None:
+    """Cancel pending wait helper tasks without cancelling underlying TTS jobs."""
+    for task in pending_tasks:
+        if waiters[task] == "tts":
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
+async def _emit_feedback_ready(
+    websocket: WebSocket,
+    state: "_RealtimeSessionState",
+    analysis: AnalysisResponse,
+    already_sent: bool,
+) -> bool:
+    """Emit structured feedback once and log when it became available."""
+    if already_sent:
+        return True
     await _send_event(
         websocket,
         RealtimeVoiceEvent(
@@ -238,6 +370,22 @@ async def _run_tutor_feedback_memory_pipeline(
             payload={"feedback": analysis.model_dump(mode="json")},
         ),
     )
+    _log_elapsed("realtime.feedback_ready_seconds", state.started_at)
+    return True
+
+
+async def _persist_and_emit_memory(
+    db: Session,
+    websocket: WebSocket,
+    state: "_RealtimeSessionState",
+    asr_result: RealtimeAsrResult,
+    tutor_reply: str,
+    analysis: AnalysisResponse,
+    already_sent: bool,
+) -> bool:
+    """Persist memory once and emit the resulting memory snapshot."""
+    if already_sent:
+        return True
     memory_after = _persist_realtime_memory(
         db=db,
         state=state,
@@ -252,13 +400,30 @@ async def _run_tutor_feedback_memory_pipeline(
             payload={"memory_after": memory_after.model_dump(mode="json")},
         ),
     )
-    await _send_event(
-        websocket,
-        RealtimeVoiceEvent(
-            type=RealtimeVoiceEventType.DONE,
-            payload={"session_id": state.session_id},
-        ),
-    )
+    _log_elapsed("realtime.memory_updated_seconds", state.started_at)
+    return True
+
+
+async def _send_events(
+    websocket: WebSocket,
+    state: "_RealtimeSessionState",
+    events: list[RealtimeVoiceEvent],
+) -> None:
+    """Send a batch of events and log first sentence/audio milestones."""
+    for event in events:
+        await _send_event(websocket, event)
+        if event.type == RealtimeVoiceEventType.TUTOR_SENTENCE:
+            _log_once(
+                state,
+                "first_tutor_sentence_logged",
+                "realtime.first_tutor_sentence_seconds",
+            )
+        if event.type == RealtimeVoiceEventType.AUDIO_CHUNK_READY:
+            _log_once(
+                state,
+                "first_audio_chunk_logged",
+                "realtime.first_audio_chunk_ready_seconds",
+            )
 
 
 def _persist_realtime_memory(
@@ -350,6 +515,7 @@ class _RealtimeSessionState:
         level: str,
         asr_session: RealtimeAsrSession,
         memory_before: MemoryResponse,
+        started_at: float,
     ) -> None:
         """Store session fields that need to survive multiple messages."""
         self.session_id = session_id
@@ -358,3 +524,39 @@ class _RealtimeSessionState:
         self.level = level
         self.asr_session = asr_session
         self.memory_before = memory_before
+        self.started_at = started_at
+        self.first_tutor_token_logged = False
+        self.first_tutor_sentence_logged = False
+        self.first_audio_chunk_logged = False
+
+
+def _log_audio_received(
+    state: "_RealtimeSessionState",
+    event: RealtimeVoiceEvent,
+) -> None:
+    """Log realtime audio byte progress without logging audio content."""
+    bytes_received = event.payload.get("bytes_received")
+    total_bytes_received = event.payload.get("total_bytes_received")
+    logger.info(
+        "realtime.audio_received elapsed_seconds=%.2f bytes=%s total_bytes=%s",
+        time.perf_counter() - state.started_at,
+        bytes_received,
+        total_bytes_received,
+    )
+
+
+def _log_once(
+    state: "_RealtimeSessionState",
+    flag_name: str,
+    metric_name: str,
+) -> None:
+    """Log a first-occurrence realtime milestone exactly once."""
+    if getattr(state, flag_name):
+        return
+    setattr(state, flag_name, True)
+    _log_elapsed(metric_name, state.started_at)
+
+
+def _log_elapsed(metric_name: str, started_at: float) -> None:
+    """Log elapsed seconds for one realtime pipeline stage."""
+    logger.info("%s=%.2f", metric_name, time.perf_counter() - started_at)

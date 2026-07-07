@@ -301,8 +301,11 @@ Supported event types:
 
 Realtime mode intentionally splits user-facing tutor reply generation from
 structured feedback analysis. Tutor reply streaming starts first for perceived
-latency; structured feedback runs in parallel and is saved afterward. This
-avoids blocking the visible tutor response on JSON analysis.
+latency; structured feedback runs in parallel and can emit `feedback_ready`
+before slow final TTS chunks finish. Memory persistence waits for complete tutor
+text plus feedback, but does not wait for every audio chunk unless needed. The
+terminal `done` event still waits until tutor text, feedback/memory work, and
+all pending TTS chunk tasks have completed or emitted warning errors.
 
 Sentence-level TTS runs as tutor tokens arrive. The backend finalizes sentences
 on `。！？!?` or newline, starts `synthesize_speech()` for each sentence, saves
@@ -321,6 +324,20 @@ Each successful TTS task emits:
 The frontend should play `audio_chunk_ready` URLs in ascending `sequence` order.
 If one sentence TTS task fails, the backend emits an `error` event with
 `severity=warning` and continues later chunks where possible.
+
+The realtime backend logs these latency milestones with elapsed seconds from
+the accepted `start` message:
+
+- `realtime.session_started`: start message accepted and session event sent.
+- `realtime.audio_received`: one audio chunk was accepted; includes byte counts.
+- `realtime.asr_final_seconds`: buffered or realtime ASR produced the transcript.
+- `realtime.first_tutor_token_seconds`: first streamed tutor text chunk emitted.
+- `realtime.first_tutor_sentence_seconds`: first sentence boundary detected.
+- `realtime.first_audio_chunk_ready_seconds`: first sentence audio URL emitted.
+- `realtime.feedback_ready_seconds`: structured feedback emitted.
+- `realtime.memory_updated_seconds`: session, mistakes, weaknesses, and lesson
+  plan saved.
+- `realtime.done_seconds`: terminal event sent after all required work finished.
 
 Fake mode and TTS behavior:
 
@@ -355,6 +372,38 @@ Run the backend:
 cd backend
 python3 -m uvicorn app.main:app --reload --port 8000
 ```
+
+To inspect realtime WebSocket event timing manually, run:
+
+```bash
+cd backend
+python3 scripts/check_realtime_voice_ws.py \
+  --audio sample-mandarin.mp3 \
+  --user-id demo-user-realtime-manual \
+  --scenario "restaurant ordering" \
+  --level "HSK3 lower intermediate"
+```
+
+The script connects to
+`ws://localhost:8000/api/v1/voice-chat/realtime` by default. Override with
+`--url` if the backend is running somewhere else. It prints event timing without
+printing secrets or raw audio:
+
+```text
+0.00s session_started payload_keys=session_id,user_id,scenario,level,asr_mode
+0.08s audio_received total_bytes_received=12345
+3.80s asr_final transcript=我想点中国菜
+4.10s tutor_token text=很好
+4.40s tutor_sentence sequence=1 text=很好，你可以说：我想点一份中国菜。
+5.20s feedback_ready
+5.30s memory_updated
+6.20s audio_chunk_ready sequence=1 audio_url=/storage/tutor_audio/...
+6.20s done
+```
+
+In optimized realtime runs, `feedback_ready` and `memory_updated` may appear
+before a slow `audio_chunk_ready`. The frontend should treat event ordering as
+progressive rather than assuming feedback always follows all audio chunks.
 
 POST a valid short `.m4a`, `.webm`, `.wav`, or `.mp3` file to
 `/api/v1/voice-chat` with `user_id=demo-user`, scenario `restaurant ordering`,

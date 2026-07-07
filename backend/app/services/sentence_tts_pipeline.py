@@ -86,6 +86,26 @@ class SentenceTtsPipeline:
         self._tasks = pending_tasks
         return ready_events
 
+    def has_pending_tasks(self) -> bool:
+        """Return whether any sentence TTS tasks are still running."""
+        return bool(self._tasks)
+
+    async def wait_for_next_event(self) -> list[RealtimeVoiceEvent]:
+        """Wait for the next TTS task to finish and return completed events."""
+        if not self._tasks:
+            return []
+        done_tasks, pending_tasks = await asyncio.wait(
+            self._tasks,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        self._tasks = list(pending_tasks)
+        events = []
+        for task in done_tasks:
+            event = await task
+            if event is not None:
+                events.append(event)
+        return sorted(events, key=_event_sequence)
+
     async def drain_all(self) -> list[RealtimeVoiceEvent]:
         """Wait for all pending TTS tasks and return their events by sequence."""
         events = []

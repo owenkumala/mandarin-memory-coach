@@ -373,7 +373,6 @@ def test_realtime_voice_chat_accepts_hsk3_and_emits_ordered_events(monkeypatch) 
     assert "memory_updated" in event_types
     assert event_types[-1] == "done"
     assert event_types.index("asr_final") < event_types.index("tutor_token")
-    assert event_types.index("audio_chunk_ready") < event_types.index("feedback_ready")
     assert captured_levels == {
         "stream": "HSK3 lower intermediate",
         "analysis": "HSK3 lower intermediate",
@@ -407,6 +406,70 @@ def test_realtime_voice_chat_defaults_missing_level_to_hsk1(monkeypatch) -> None
 
     assert event["type"] == "session_started"
     assert event["payload"]["level"] == "HSK1 beginner"
+
+
+def test_realtime_feedback_ready_can_emit_before_slow_audio_chunk(monkeypatch) -> None:
+    """Structured feedback can emit before a slow final sentence TTS task."""
+    async def fake_stream_tutor_reply(
+        self: QwenClient,
+        transcript: str,
+        memory: object,
+        scenario: str,
+        level: str,
+    ):
+        """Yield one complete sentence so TTS can run in the background."""
+        yield "很好，你可以说：我想点一份中国菜。"
+
+    async def fake_analyze_mistakes(
+        self: QwenClient,
+        transcript: str,
+        scenario: str,
+        level: str,
+    ) -> AnalysisResponse:
+        """Return structured feedback before the mocked TTS task finishes."""
+        await asyncio.sleep(0)
+        return AnalysisResponse(
+            mistakes=[],
+            fluency_score=84,
+            confidence_score=80,
+            summary="Fast realtime analysis",
+            next_focus="restaurant ordering",
+            next_drill="Practice ordering one dish.",
+        )
+
+    async def slow_synthesize_speech(
+        self: QwenClient,
+        text: str,
+        output_path: str,
+    ) -> str:
+        """Delay TTS enough for feedback_ready to win the event race."""
+        await asyncio.sleep(0.05)
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake realtime tutor audio")
+        return str(path)
+
+    monkeypatch.setattr(QwenClient, "transcribe_audio", _fake_realtime_transcribe_audio)
+    monkeypatch.setattr(QwenClient, "stream_tutor_reply", fake_stream_tutor_reply)
+    monkeypatch.setattr(QwenClient, "analyze_mistakes", fake_analyze_mistakes)
+    monkeypatch.setattr(QwenClient, "synthesize_speech", slow_synthesize_speech)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/voice-chat/realtime") as websocket:
+            websocket.send_json({"type": "start", "user_id": "demo-user-realtime-fast-feedback"})
+            websocket.send_json(
+                {
+                    "type": "audio_chunk",
+                    "audio_base64": base64.b64encode(b"fake audio").decode("ascii"),
+                }
+            )
+            websocket.send_json({"type": "end_audio"})
+            events = _receive_realtime_events_until_done(websocket)
+
+    event_types = [event["type"] for event in events]
+    assert event_types.index("feedback_ready") < event_types.index("audio_chunk_ready")
+    assert event_types.index("memory_updated") < event_types.index("audio_chunk_ready")
+    assert event_types[-1] == "done"
 
 
 def test_sentence_tts_splitter_detects_chinese_and_english_punctuation() -> None:
