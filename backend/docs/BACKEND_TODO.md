@@ -17,7 +17,7 @@ SpeakHan / Mandarin Memory Coach project.
 - [x] Session, mistake, and active weakness persistence
 - [x] Weakness memory scoring and status updates
 - [x] Real Qwen tutor reply and structured feedback
-- [x] Real Qwen ASR transcription
+- [x] Real Qwen ASR transcription through DashScope native API
 - [x] Combined Qwen call for lower `/voice-chat` latency
 - [x] Timing logs for voice-chat and Qwen stages
 - [x] Upload validation for extension, empty file, and size limit
@@ -31,6 +31,8 @@ SpeakHan / Mandarin Memory Coach project.
 - [ ] Confirm timing logs appear in uvicorn during manual testing.
 - [ ] Confirm `qwen-plus` live `/voice-chat` latency remains below 10-15 seconds.
 - [ ] Run manual real-ASR test with short spoken Mandarin audio.
+- [ ] Run `python3 scripts/check_qwen_asr.py` to confirm ASR key/endpoint.
+- [ ] If local audio paths fail, upload audio to OSS or another accessible URL.
 - [ ] Confirm demo user memory should be reset or use a fresh `user_id`.
 
 ## Next Backend Tasks

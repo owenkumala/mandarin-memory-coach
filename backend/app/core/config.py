@@ -19,12 +19,17 @@ class Settings(BaseSettings):
     USER_AUDIO_DIR: str = "./storage/user_audio"
     TUTOR_AUDIO_DIR: str = "./storage/tutor_audio"
     USE_FAKE_QWEN: bool = True
+    USE_FAKE_ASR: bool = True
     QWEN_API_KEY: str = ""
+    DASHSCOPE_API_KEY: str = ""
     QWEN_BASE_URL: str = ""
     QWEN_CHAT_MODEL: str = ""
     QWEN_ASR_BASE_URL: str = ""
-    QWEN_ASR_MODEL: str = ""
+    QWEN_ASR_MODEL: str = "qwen3-asr-flash"
     QWEN_ASR_LANGUAGE: str = "zh"
+    QWEN_ASR_ENABLE_LID: bool = True
+    QWEN_ASR_ENABLE_ITN: bool = False
+    QWEN_ASR_AUDIO_REF_MODE: str = "local_path"
     QWEN_ASR_REQUEST_TIMEOUT_SECONDS: float = 30.0
     QWEN_ASR_MAX_RETRIES: int = 0
     QWEN_TTS_MODEL: str = ""
@@ -35,7 +40,11 @@ class Settings(BaseSettings):
     QWEN_MAX_RETRIES: int = 0
     MAX_AUDIO_UPLOAD_BYTES: int = 5_000_000
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     @property
     def database_type(self) -> str:

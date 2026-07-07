@@ -4,14 +4,19 @@ The class keeps all future Alibaba Cloud Model Studio calls behind one
 interface while fake mode makes the memory pipeline testable without secrets.
 """
 
+import asyncio
 import json
 import logging
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from textwrap import dedent
 
+import dashscope
+from dashscope.common.error import DashScopeException
 from openai import APITimeoutError, AsyncOpenAI, OpenAIError
 from pydantic import ValidationError
+from requests import RequestException
 
 from app.core.config import Settings
 from app.schemas import (
@@ -58,51 +63,11 @@ class QwenClient:
 
     async def transcribe_audio(self, audio_path: str) -> str:
         """Transcribe learner audio through fake mode or real Qwen ASR."""
-        if self.settings.USE_FAKE_QWEN:
+        if self.settings.USE_FAKE_QWEN or self.settings.USE_FAKE_ASR:
             return "我想吃中国菜"
 
-        client = self._asr_client()
-        started_at = time.perf_counter()
-        try:
-            with open(audio_path, "rb") as audio_file:
-                request_params: dict[str, object] = {
-                    "model": self.settings.QWEN_ASR_MODEL,
-                    "file": audio_file,
-                }
-                if self.settings.QWEN_ASR_LANGUAGE.strip():
-                    request_params["language"] = self.settings.QWEN_ASR_LANGUAGE
-
-                # Keep the ASR call isolated here so endpoint and memory behavior
-                # stay unchanged while real transcription replaces the fake text.
-                response = await client.audio.transcriptions.create(**request_params)
-        except FileNotFoundError as exc:
-            raise ValueError("Audio file for Qwen ASR was not found.") from exc
-        except OSError as exc:
-            raise ValueError("Audio file for Qwen ASR could not be read.") from exc
-        except APITimeoutError as exc:
-            _log_openai_error(
-                operation="asr",
-                exc=exc,
-                model=self.settings.QWEN_ASR_MODEL,
-                settings=self.settings,
-            )
-            raise ValueError(_qwen_asr_timeout_message(self.settings)) from exc
-        except OpenAIError as exc:
-            _log_openai_error(
-                operation="asr",
-                exc=exc,
-                model=self.settings.QWEN_ASR_MODEL,
-                settings=self.settings,
-            )
-            raise ValueError("Qwen ASR request failed.") from exc
-        finally:
-            elapsed = time.perf_counter() - started_at
-            logger.info(
-                "qwen.asr_seconds=%.2f model=%s",
-                elapsed,
-                self.settings.QWEN_ASR_MODEL,
-            )
-        return _extract_asr_transcript(response)
+        audio_ref = _build_asr_audio_ref(audio_path, self.settings)
+        return await run_dashscope_asr(self.settings, audio_ref)
 
     async def generate_tutor_reply(
         self,
@@ -281,35 +246,6 @@ class QwenClient:
             max_retries=self.settings.QWEN_MAX_RETRIES,
         )
 
-    def _asr_client(self) -> AsyncOpenAI:
-        """Validate ASR settings and return an OpenAI-compatible ASR client."""
-        asr_base_url = (
-            self.settings.QWEN_ASR_BASE_URL.strip()
-            or self.settings.QWEN_BASE_URL.strip()
-        )
-        missing_settings = [
-            name
-            for name, value in (
-                ("QWEN_API_KEY", self.settings.QWEN_API_KEY),
-                ("QWEN_ASR_MODEL", self.settings.QWEN_ASR_MODEL),
-                ("QWEN_BASE_URL or QWEN_ASR_BASE_URL", asr_base_url),
-            )
-            if not value.strip()
-        ]
-        if missing_settings:
-            missing = ", ".join(missing_settings)
-            raise ValueError(
-                "Qwen ASR real mode requires QWEN_API_KEY, QWEN_ASR_MODEL, "
-                "and QWEN_BASE_URL or QWEN_ASR_BASE_URL. "
-                f"Missing: {missing}."
-            )
-        return AsyncOpenAI(
-            api_key=self.settings.QWEN_API_KEY,
-            base_url=asr_base_url,
-            timeout=self.settings.QWEN_ASR_REQUEST_TIMEOUT_SECONDS,
-            max_retries=self.settings.QWEN_ASR_MAX_RETRIES,
-        )
-
 
 def _tutor_system_prompt() -> str:
     """Return the system prompt for spoken Mandarin tutoring."""
@@ -330,13 +266,143 @@ def _qwen_timeout_message(operation: str, settings: Settings) -> str:
     )
 
 
-def _qwen_asr_timeout_message(settings: Settings) -> str:
-    """Return a clear ASR timeout message without exposing credentials."""
-    return (
-        "Qwen ASR request timed out after "
-        f"{settings.QWEN_ASR_REQUEST_TIMEOUT_SECONDS:.0f} seconds using model "
-        f"{settings.QWEN_ASR_MODEL}."
+async def run_dashscope_asr(settings: Settings, audio_ref: str) -> str:
+    """Run DashScope native qwen3-asr-flash and return parsed transcript text."""
+    response = await call_dashscope_asr(settings, audio_ref)
+    return parse_dashscope_asr_response(response, settings)
+
+
+async def call_dashscope_asr(settings: Settings, audio_ref: str) -> object:
+    """Call DashScope native ASR and return the raw SDK response object."""
+    api_key, key_source = _asr_api_key(settings)
+    if not settings.QWEN_ASR_MODEL.strip():
+        raise ValueError("Qwen ASR requires QWEN_ASR_MODEL.")
+
+    started_at = time.perf_counter()
+    logger.info(
+        "qwen.asr_request model=%s key_source=%s asr_base_url_set=%s audio_ref_mode=%s",
+        settings.QWEN_ASR_MODEL,
+        key_source,
+        bool(settings.QWEN_ASR_BASE_URL.strip()),
+        settings.QWEN_ASR_AUDIO_REF_MODE,
     )
+    try:
+        # qwen3-asr-flash uses DashScope native MultiModalConversation, not
+        # OpenAI-compatible /audio/transcriptions.
+        response = await asyncio.to_thread(
+            dashscope.MultiModalConversation.call,
+            api_key=api_key,
+            model=settings.QWEN_ASR_MODEL,
+            messages=[
+                {"role": "system", "content": [{"text": ""}]},
+                {"role": "user", "content": [{"audio": audio_ref}]},
+            ],
+            result_format="message",
+            asr_options={
+                "enable_lid": settings.QWEN_ASR_ENABLE_LID,
+                "enable_itn": settings.QWEN_ASR_ENABLE_ITN,
+                "language": settings.QWEN_ASR_LANGUAGE,
+            },
+            request_timeout=settings.QWEN_ASR_REQUEST_TIMEOUT_SECONDS,
+            **_dashscope_base_address_kwargs(settings),
+        )
+    except (DashScopeException, RequestException) as exc:
+        logger.warning(
+            "qwen.asr_dashscope_exception model=%s key_source=%s details=%s",
+            settings.QWEN_ASR_MODEL,
+            key_source,
+            _safe_error_detail(str(exc), settings),
+        )
+        raise ValueError("Qwen ASR DashScope request failed.") from exc
+    finally:
+        elapsed = time.perf_counter() - started_at
+        logger.info(
+            "qwen.asr_seconds=%.2f model=%s",
+            elapsed,
+            settings.QWEN_ASR_MODEL,
+        )
+    return response
+
+
+def _asr_api_key(settings: Settings) -> tuple[str, str]:
+    """Return the ASR API key and safe source name using documented precedence."""
+    if settings.DASHSCOPE_API_KEY.strip():
+        return settings.DASHSCOPE_API_KEY, "DASHSCOPE_API_KEY"
+    if settings.QWEN_API_KEY.strip():
+        return settings.QWEN_API_KEY, "QWEN_API_KEY"
+    raise ValueError("Qwen ASR requires DASHSCOPE_API_KEY or QWEN_API_KEY.")
+
+
+def _dashscope_base_address_kwargs(settings: Settings) -> dict[str, str]:
+    """Return request-level DashScope base URL override when configured."""
+    if not settings.QWEN_ASR_BASE_URL.strip():
+        return {}
+    return {"base_address": settings.QWEN_ASR_BASE_URL.strip()}
+
+
+def _build_asr_audio_ref(audio_path: str, settings: Settings) -> str:
+    """Build the audio reference passed to DashScope ASR."""
+    path = Path(audio_path)
+    if not path.exists():
+        raise ValueError("Audio file for Qwen ASR was not found.")
+    if not path.is_file():
+        raise ValueError("Audio file for Qwen ASR was not a regular file.")
+
+    audio_ref_mode = settings.QWEN_ASR_AUDIO_REF_MODE.strip().lower()
+    if audio_ref_mode == "local_path":
+        return str(path)
+    if audio_ref_mode == "file_url":
+        return path.resolve().as_uri()
+    raise ValueError(
+        "QWEN_ASR_AUDIO_REF_MODE must be one of: local_path, file_url."
+    )
+
+
+def parse_dashscope_asr_response(response: object, settings: Settings) -> str:
+    """Parse a DashScope ASR response and return transcript text."""
+    status_code = _response_value(response, "status_code")
+    if status_code is not None and int(status_code) != 200:
+        raise ValueError(_dashscope_asr_failure_message(response, settings))
+
+    output = _response_value(response, "output")
+    transcript = _extract_asr_transcript(output)
+    if transcript:
+        return transcript
+
+    transcript = _extract_asr_transcript(response)
+    if transcript:
+        return transcript
+    raise ValueError("Qwen ASR response transcript was empty.")
+
+
+def _dashscope_asr_failure_message(response: object, settings: Settings) -> str:
+    """Build a safe, useful error message from a failed DashScope response."""
+    status_code = _response_value(response, "status_code")
+    code = _response_value(response, "code")
+    request_id = _response_value(response, "request_id")
+    message = _safe_error_detail(_response_value(response, "message"), settings)
+    parts = [f"status_code={status_code}"]
+    if code:
+        parts.append(f"code={code}")
+    if request_id:
+        parts.append(f"request_id={request_id}")
+    if message:
+        parts.append(f"message={message}")
+
+    guidance = ""
+    if code == "InvalidApiKey":
+        guidance = (
+            " Check whether DASHSCOPE_API_KEY/QWEN_API_KEY matches the "
+            "DashScope native ASR endpoint and whether QWEN_ASR_BASE_URL is correct."
+        )
+    return f"Qwen ASR request failed with {' '.join(parts)}.{guidance}"
+
+
+def _response_value(value: object, key: str) -> object:
+    """Read a field from DashScope response objects and dict-like payloads."""
+    if isinstance(value, Mapping):
+        return value.get(key)
+    return getattr(value, key, None)
 
 
 def _log_openai_error(
@@ -390,6 +456,8 @@ def _safe_error_detail(value: object, settings: Settings) -> object:
     text = str(value)
     if settings.QWEN_API_KEY:
         text = text.replace(settings.QWEN_API_KEY, "[redacted]")
+    if settings.DASHSCOPE_API_KEY:
+        text = text.replace(settings.DASHSCOPE_API_KEY, "[redacted]")
     if len(text) > 500:
         text = f"{text[:500]}..."
     return text
@@ -576,21 +644,45 @@ def _extract_chat_content(response: object) -> str:
 
 
 def _extract_asr_transcript(response: object) -> str:
-    """Extract transcript text from an OpenAI-compatible ASR response."""
-    text = getattr(response, "text", None)
-    if text is None and isinstance(response, Mapping):
-        text = response.get("text")
-    if text is None:
-        try:
-            text = response["text"]  # type: ignore[index]
-        except (KeyError, TypeError):
-            text = None
-    if not isinstance(text, str):
-        raise ValueError("Qwen ASR response did not include transcript text.")
-    transcript = text.strip()
-    if not transcript:
-        raise ValueError("Qwen ASR response transcript was empty.")
-    return transcript
+    """Extract transcript text from common DashScope ASR response shapes."""
+    content = _dashscope_content(response)
+    if content is not None:
+        return _text_from_content(content)
+
+    text = _response_value(response, "text")
+    if isinstance(text, str):
+        return text.strip()
+    return ""
+
+
+def _dashscope_content(response: object) -> object:
+    """Return message content from DashScope output choices when present."""
+    output = _response_value(response, "output") or response
+    choices = _response_value(output, "choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first_choice = choices[0]
+    message = _response_value(first_choice, "message")
+    if message is None:
+        return _response_value(first_choice, "content")
+    return _response_value(message, "content")
+
+
+def _text_from_content(content: object) -> str:
+    """Extract ASR transcript text from DashScope content string or list."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        text_parts = [
+            str(text).strip()
+            for item in content
+            if (text := _response_value(item, "text")) is not None
+        ]
+        return " ".join(part for part in text_parts if part).strip()
+    text = _response_value(content, "text")
+    if isinstance(text, str):
+        return text.strip()
+    return ""
 
 
 def strip_json_code_fence(content: str) -> str:

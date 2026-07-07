@@ -1,18 +1,21 @@
 """Unit tests for fake and real-mode Qwen client helpers."""
 
 import asyncio
-import logging
 from unittest.mock import AsyncMock, Mock
 
+from dashscope.common.error import DashScopeException
 from openai import APIConnectionError, APITimeoutError
 import pytest
 
 from app.core.config import Settings
 from app.schemas import AnalysisResponse, MemoryResponse
+from app.services import qwen_client
 from app.services.qwen_client import (
     QwenClient,
+    _asr_api_key,
     _extract_asr_transcript,
     _safe_error_detail,
+    parse_dashscope_asr_response,
     parse_analysis_json,
     parse_tutor_turn_json,
     strip_json_code_fence,
@@ -107,6 +110,17 @@ def test_fake_asr_still_returns_fixed_transcript() -> None:
     assert transcript == "我想吃中国菜"
 
 
+def test_fake_asr_returns_fixed_transcript_when_qwen_chat_is_real() -> None:
+    """USE_FAKE_ASR keeps ASR fake even when chat/feedback are real."""
+    client = QwenClient(
+        settings=Settings(USE_FAKE_QWEN=False, USE_FAKE_ASR=True)
+    )
+
+    transcript = asyncio.run(client.transcribe_audio("anything.webm"))
+
+    assert transcript == "我想吃中国菜"
+
+
 def test_real_mode_missing_api_key_raises_useful_value_error() -> None:
     """Real mode validates required Qwen settings before network calls."""
     client = QwenClient(
@@ -151,86 +165,158 @@ def test_generate_tutor_turn_real_mode_missing_api_key_raises_value_error() -> N
         )
 
 
+def test_asr_uses_dashscope_api_key_before_qwen_api_key() -> None:
+    """ASR prefers DASHSCOPE_API_KEY when both key names are configured."""
+    settings = Settings(DASHSCOPE_API_KEY="dash-key", QWEN_API_KEY="qwen-key")
+
+    api_key, key_source = _asr_api_key(settings)
+
+    assert api_key == "dash-key"
+    assert key_source == "DASHSCOPE_API_KEY"
+
+
+def test_asr_falls_back_to_qwen_api_key() -> None:
+    """ASR falls back to QWEN_API_KEY for Qwen Cloud key reuse."""
+    settings = Settings(DASHSCOPE_API_KEY="", QWEN_API_KEY="qwen-key")
+
+    api_key, key_source = _asr_api_key(settings)
+
+    assert api_key == "qwen-key"
+    assert key_source == "QWEN_API_KEY"
+
+
+def test_asr_missing_both_keys_raises_useful_value_error() -> None:
+    """ASR validates that at least one accepted key setting is configured."""
+    settings = Settings(DASHSCOPE_API_KEY="", QWEN_API_KEY="")
+
+    with pytest.raises(
+        ValueError,
+        match="Qwen ASR requires DASHSCOPE_API_KEY or QWEN_API_KEY",
+    ):
+        _asr_api_key(settings)
+
+
 def test_real_asr_missing_model_raises_useful_value_error() -> None:
-    """Real ASR mode validates model config before any API call."""
-    client = QwenClient(
-        settings=Settings(
-            USE_FAKE_QWEN=False,
-            QWEN_API_KEY="test-key",
-            QWEN_BASE_URL="https://example.com/compatible-mode/v1",
-            QWEN_ASR_MODEL="",
+    """Real ASR mode validates model config before any SDK call."""
+    with pytest.raises(ValueError, match="Qwen ASR requires QWEN_ASR_MODEL"):
+        asyncio.run(
+            qwen_client.run_dashscope_asr(
+                Settings(
+                    USE_FAKE_QWEN=False,
+                    USE_FAKE_ASR=False,
+                    QWEN_API_KEY="test-key",
+                    QWEN_ASR_MODEL="",
+                ),
+                "sample.webm",
+            )
         )
-    )
-
-    with pytest.raises(ValueError, match="Missing: QWEN_ASR_MODEL"):
-        asyncio.run(client.transcribe_audio("anything.webm"))
 
 
-def test_real_asr_success_with_mocked_text_response(tmp_path) -> None:
-    """Real ASR returns transcript text from a mocked SDK response."""
+def test_real_asr_success_with_mocked_dashscope_call(tmp_path, monkeypatch) -> None:
+    """Real ASR calls DashScope native API through a mocked SDK call."""
     audio_path = tmp_path / "sample.webm"
     audio_path.write_bytes(b"fake audio")
+    call_kwargs = {}
+
+    def fake_call(**kwargs):
+        """Return a fake DashScope ASR response without live network."""
+        call_kwargs.update(kwargs)
+        return {
+            "status_code": 200,
+            "output": {
+                "choices": [
+                    {"message": {"content": [{"text": " 我想吃中国菜 "}]}}
+                ]
+            },
+        }
+
+    monkeypatch.setattr(
+        qwen_client.dashscope.MultiModalConversation,
+        "call",
+        staticmethod(fake_call),
+    )
     client = QwenClient(
         settings=Settings(
             USE_FAKE_QWEN=False,
+            USE_FAKE_ASR=False,
+            DASHSCOPE_API_KEY="",
             QWEN_API_KEY="test-key",
-            QWEN_BASE_URL="https://example.com/compatible-mode/v1",
             QWEN_ASR_MODEL="qwen-asr-test",
+            QWEN_ASR_BASE_URL="https://dashscope-intl.aliyuncs.com/api/v1",
         )
     )
-    mock_qwen = Mock()
-    mock_qwen.audio.transcriptions.create = AsyncMock(
-        return_value=Mock(text=" 我想吃中国菜 ")
-    )
-    client._asr_client = Mock(return_value=mock_qwen)
 
     transcript = asyncio.run(client.transcribe_audio(str(audio_path)))
 
     assert transcript == "我想吃中国菜"
+    assert call_kwargs["api_key"] == "test-key"
+    assert call_kwargs["model"] == "qwen-asr-test"
+    assert call_kwargs["base_address"] == "https://dashscope-intl.aliyuncs.com/api/v1"
+    assert call_kwargs["asr_options"]["language"] == "zh"
 
 
-def test_asr_dict_like_response_extracts_text() -> None:
-    """ASR transcript extraction also supports dict-like responses."""
-    assert _extract_asr_transcript({"text": " 我想吃中国菜 "}) == "我想吃中国菜"
+def test_dashscope_asr_non_200_response_raises_useful_error() -> None:
+    """Failed DashScope ASR responses include safe debugging fields."""
+    settings = Settings(QWEN_API_KEY="secret-key")
+
+    with pytest.raises(ValueError) as exc_info:
+        parse_dashscope_asr_response(
+            {
+                "status_code": 401,
+                "request_id": "req-123",
+                "code": "InvalidApiKey",
+                "message": "InvalidAPI-key provided for secret-key.",
+            },
+            settings,
+        )
+
+    message = str(exc_info.value)
+    assert "status_code=401" in message
+    assert "code=InvalidApiKey" in message
+    assert "request_id=req-123" in message
+    assert "InvalidAPI-key provided for [redacted]." in message
+    assert "QWEN_ASR_BASE_URL is correct" in message
+    assert "secret-key" not in message
+
+
+def test_asr_parser_extracts_content_string() -> None:
+    """DashScope ASR parser supports string message content."""
+    response = {
+        "status_code": 200,
+        "output": {"choices": [{"message": {"content": " 我想吃中国菜 "}}]},
+    }
+
+    assert parse_dashscope_asr_response(response, Settings()) == "我想吃中国菜"
+
+
+def test_asr_parser_extracts_content_text_list() -> None:
+    """DashScope ASR parser supports content lists with text objects."""
+    response = {
+        "status_code": 200,
+        "output": {
+            "choices": [
+                {"message": {"content": [{"text": "我想"}, {"text": "吃中国菜"}]}}
+            ]
+        },
+    }
+
+    assert parse_dashscope_asr_response(response, Settings()) == "我想 吃中国菜"
+
+
+def test_asr_parser_extracts_dict_like_output_choices() -> None:
+    """DashScope ASR parser supports dict-like output choices."""
+    output = {"choices": [{"message": {"content": [{"text": " 我想吃中国菜 "}]}}]}
+
+    assert _extract_asr_transcript(output) == "我想吃中国菜"
 
 
 def test_asr_empty_transcript_raises_useful_error() -> None:
     """Empty ASR transcripts fail clearly before downstream Qwen calls."""
     with pytest.raises(ValueError, match="transcript was empty"):
-        _extract_asr_transcript(Mock(text="   "))
-
-
-def test_asr_malformed_response_raises_useful_error() -> None:
-    """Malformed ASR responses fail with a clear transcript-shape error."""
-    with pytest.raises(ValueError, match="did not include transcript text"):
-        _extract_asr_transcript(Mock(text=None))
-
-
-def test_asr_openai_error_becomes_value_error_and_logs_detail(tmp_path, caplog) -> None:
-    """ASR OpenAIError is logged safely before conversion to ValueError."""
-    audio_path = tmp_path / "sample.webm"
-    audio_path.write_bytes(b"fake audio")
-    client = QwenClient(
-        settings=Settings(
-            USE_FAKE_QWEN=False,
-            QWEN_API_KEY="test-key",
-            QWEN_BASE_URL="https://example.com/compatible-mode/v1",
-            QWEN_ASR_MODEL="qwen-asr-test",
+        parse_dashscope_asr_response(
+            {"status_code": 200, "output": {"choices": [{"message": {"content": ""}}]}},
+            Settings(),
         )
-    )
-    mock_qwen = Mock()
-    mock_qwen.audio.transcriptions.create = AsyncMock(
-        side_effect=APIConnectionError(request=Mock())
-    )
-    client._asr_client = Mock(return_value=mock_qwen)
-    caplog.set_level(logging.WARNING, logger="app.services.qwen_client")
-
-    with pytest.raises(ValueError, match="Qwen ASR request failed."):
-        asyncio.run(client.transcribe_audio(str(audio_path)))
-
-    assert "qwen.asr_openai_error" in caplog.text
-    assert "APIConnectionError" in caplog.text
-    assert "test-key" not in caplog.text
 
 
 def test_safe_error_detail_redacts_configured_api_key() -> None:
@@ -248,30 +334,25 @@ def test_safe_error_detail_redacts_configured_api_key() -> None:
     assert detail == {"message": "Authorization failed for [redacted]"}
 
 
-def test_asr_timeout_error_has_specific_message(tmp_path) -> None:
-    """ASR timeout reports the configured timeout and model."""
-    audio_path = tmp_path / "sample.webm"
-    audio_path.write_bytes(b"fake audio")
-    client = QwenClient(
-        settings=Settings(
-            USE_FAKE_QWEN=False,
-            QWEN_API_KEY="test-key",
-            QWEN_BASE_URL="https://example.com/compatible-mode/v1",
-            QWEN_ASR_MODEL="qwen-asr-test",
-            QWEN_ASR_REQUEST_TIMEOUT_SECONDS=12,
-        )
-    )
-    mock_qwen = Mock()
-    mock_qwen.audio.transcriptions.create = AsyncMock(
-        side_effect=APITimeoutError(request=Mock())
-    )
-    client._asr_client = Mock(return_value=mock_qwen)
+def test_dashscope_asr_exception_becomes_value_error(monkeypatch) -> None:
+    """DashScope SDK exceptions are converted into a useful ValueError."""
+    def fake_call(**kwargs):
+        """Raise a fake SDK error without live network."""
+        raise DashScopeException("SDK failure")
 
-    with pytest.raises(
-        ValueError,
-        match="Qwen ASR request timed out after 12 seconds using model qwen-asr-test.",
-    ):
-        asyncio.run(client.transcribe_audio(str(audio_path)))
+    monkeypatch.setattr(
+        qwen_client.dashscope.MultiModalConversation,
+        "call",
+        staticmethod(fake_call),
+    )
+
+    with pytest.raises(ValueError, match="Qwen ASR DashScope request failed."):
+        asyncio.run(
+            qwen_client.run_dashscope_asr(
+                Settings(DASHSCOPE_API_KEY="test-key"),
+                "https://example.com/sample.mp3",
+            )
+        )
 
 
 def test_tutor_reply_openai_error_becomes_value_error() -> None:

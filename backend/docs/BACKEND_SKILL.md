@@ -20,8 +20,9 @@ practice to those memories.
 The demo loop is:
 
 1. Learner speaks Mandarin through `/api/v1/voice-chat`.
-2. The backend transcribes speech. ASR is fake in `USE_FAKE_QWEN=true` and
-   real Qwen ASR in `USE_FAKE_QWEN=false` when ASR settings are configured.
+2. The backend transcribes speech. ASR is fake in `USE_FAKE_QWEN=true` or
+   `USE_FAKE_ASR=true`, and real DashScope Qwen ASR in `USE_FAKE_QWEN=false`
+   plus `USE_FAKE_ASR=false` when ASR settings are configured.
 3. Qwen generates a short tutor reply and structured feedback JSON.
 4. The backend saves the session, mistakes, and active weaknesses.
 5. The next session retrieves memory and adapts the lesson.
@@ -40,6 +41,8 @@ up first."
 - Fake-first Qwen client in `app/services/qwen_client.py`.
 - Alibaba Cloud Model Studio OpenAI-compatible chat API for real tutor reply
   and structured feedback.
+- DashScope native `MultiModalConversation` API for upload-style
+  `qwen3-asr-flash` ASR.
 - Local audio storage under `backend/storage/`.
 - `memory_service.py` owns DB reads/writes for learner memory.
 - `lesson_service.py` owns lesson-plan persistence and defaults.
@@ -71,8 +74,9 @@ implemented yet.
 - The local code uses a combined Qwen turn call for lower latency: one Qwen
   request returns both `tutor_reply` and `feedback`.
 - Fake mode remains available for tests and development.
-- ASR calls Qwen in real mode when ASR settings are configured.
-- Fake mode remains available; `transcribe_audio()` returns `我想吃中国菜`.
+- ASR calls DashScope native Qwen ASR in real mode when ASR settings are
+  configured.
+- Fake ASR remains available; `transcribe_audio()` returns `我想吃中国菜`.
 - TTS remains fake; `synthesize_speech()` returns `None`.
 
 ### Recommended model settings
@@ -94,12 +98,17 @@ Use placeholders only; never commit real secrets.
 
 ```env
 USE_FAKE_QWEN=true
+USE_FAKE_ASR=true
 QWEN_API_KEY=
+DASHSCOPE_API_KEY=
 QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 QWEN_CHAT_MODEL=qwen-plus
 QWEN_ASR_BASE_URL=
-QWEN_ASR_MODEL=
+QWEN_ASR_MODEL=qwen3-asr-flash
 QWEN_ASR_LANGUAGE=zh
+QWEN_ASR_ENABLE_LID=true
+QWEN_ASR_ENABLE_ITN=false
+QWEN_ASR_AUDIO_REF_MODE=local_path
 QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
 QWEN_ASR_MAX_RETRIES=0
 QWEN_REQUEST_TIMEOUT_SECONDS=30
@@ -163,6 +172,8 @@ Automated tests must not call live Qwen. Keep live Qwen checks manual.
 - Keep route files thin.
 - Put orchestration and business logic in services.
 - Put Qwen calls only in `app/services/qwen_client.py`.
+- Keep `QWEN_BASE_URL` for OpenAI-compatible chat and `QWEN_ASR_BASE_URL` for
+  DashScope native ASR overrides.
 - Put DB logic in `memory_service.py` and `lesson_service.py`.
 - Use explicit Pydantic `response_model` schemas for every endpoint.
 - Keep fake-first external dependencies working.
