@@ -32,7 +32,7 @@ def create_lesson_plan(
         user_id=user_id,
         focus_area=focus_area,
         recommended_drill=analysis.next_drill,
-        next_scenario=scenario,
+        next_scenario=_normalize_scenario(scenario),
         target_words=DEFAULT_TARGET_WORDS,
     )
     db.add(lesson_plan)
@@ -60,6 +60,11 @@ def get_latest_or_default_lesson_plan(db: Session, user_id: str) -> LessonPlanRe
         target_words=DEFAULT_TARGET_WORDS,
         created_at=utc_now(),
     )
+
+
+def _normalize_scenario(scenario: str) -> str:
+    """Collapse scenario whitespace while preserving word separation."""
+    return " ".join(scenario.split())
 
 
 def _to_lesson_plan_response(lesson_plan: models.LessonPlan) -> LessonPlanResponse:

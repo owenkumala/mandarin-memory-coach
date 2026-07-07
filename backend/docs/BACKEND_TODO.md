@@ -18,9 +18,14 @@ SpeakHan / Mandarin Memory Coach project.
 - [x] Weakness memory scoring and status updates
 - [x] Real Qwen tutor reply and structured feedback
 - [x] Real Qwen ASR transcription through DashScope native API
+- [x] Temporary Cloudflare R2 `s3_url` mode for real-ASR audio URLs
+- [x] Manual real-ASR `/voice-chat` test verified transcript, tutor reply, feedback JSON, and memory recurrence
 - [x] Combined Qwen call for lower `/voice-chat` latency
 - [x] Timing logs for voice-chat and Qwen stages
 - [x] Upload validation for extension, empty file, and size limit
+- [x] Observed mistakes stay active/improving instead of being auto-resolved
+- [x] Memory responses hide resolved weakness rows from `active_weaknesses`
+- [x] Lesson-plan scenario names preserve word spacing
 - [x] Pytest coverage for endpoints, memory behavior, validation, and Qwen client helpers
 
 ## In Progress / Verify
@@ -30,7 +35,7 @@ SpeakHan / Mandarin Memory Coach project.
 - [ ] Confirm Qwen integration docs recommend `qwen-plus`.
 - [ ] Confirm timing logs appear in uvicorn during manual testing.
 - [ ] Confirm `qwen-plus` live `/voice-chat` latency remains below 10-15 seconds.
-- [ ] Run manual real-ASR test with short spoken Mandarin audio.
+- [ ] Repeat manual real-ASR test with final demo audio/settings before recording.
 - [ ] Run `python3 scripts/check_qwen_asr.py` to confirm ASR key/endpoint.
 - [ ] Fill Alibaba OSS env vars before real-ASR voice-chat demo.
 - [ ] Confirm `QWEN_ASR_AUDIO_REF_MODE=oss_url` works with uploaded demo audio.

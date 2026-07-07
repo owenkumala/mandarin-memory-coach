@@ -17,10 +17,19 @@ os.environ["USE_FAKE_QWEN"] = "true"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.main import app  # noqa: E402
 from app.db.database import SessionLocal  # noqa: E402
-from app.schemas import MistakeAnalysis, MistakeType, WeaknessCategory  # noqa: E402
+from app.db import models  # noqa: E402
+from app.main import app  # noqa: E402
+from app.schemas import (  # noqa: E402
+    AnalysisResponse,
+    MistakeAnalysis,
+    MistakeType,
+    WeaknessCategory,
+    WeaknessStatus,
+)
+from app.services.lesson_service import create_lesson_plan  # noqa: E402
 from app.services.memory_service import (  # noqa: E402
+    get_memory,
     get_or_create_user,
     update_active_weaknesses,
 )
@@ -195,3 +204,127 @@ def test_repeated_mistake_score_stays_at_or_above_latest_severity() -> None:
 
     assert updated_weaknesses[0].times_failed == 2
     assert updated_weaknesses[0].severity_score >= mistake.severity
+
+
+def test_first_low_severity_hesitation_is_improving_not_resolved() -> None:
+    """A newly observed low-severity hesitation remains visible in memory."""
+    user_id = "demo-user-low-hesitation"
+    mistake = MistakeAnalysis(
+        type=MistakeType.HESITATION,
+        weakness_category=WeaknessCategory.HESITATION,
+        target="呃",
+        severity=2,
+        feedback="Pause briefly instead of filling with 呃.",
+        example_sentence="请问我可以点菜了吗？",
+        recommended_drill="Repeat the sentence once with a calm pause before 请问.",
+    )
+
+    db = SessionLocal()
+    try:
+        get_or_create_user(db, user_id=user_id, mandarin_level="HSK1 beginner")
+        updated_weaknesses = update_active_weaknesses(
+            db,
+            user_id=user_id,
+            mistakes=[mistake],
+        )
+    finally:
+        db.close()
+
+    assert updated_weaknesses[0].times_failed == 1
+    assert updated_weaknesses[0].severity_score == 2.0
+    assert updated_weaknesses[0].status == WeaknessStatus.IMPROVING.value
+
+
+def test_repeated_low_severity_hesitation_never_becomes_resolved() -> None:
+    """Repeated low-severity hesitation increments recurrence without resolving."""
+    user_id = "demo-user-repeat-hesitation"
+    mistake = MistakeAnalysis(
+        type=MistakeType.HESITATION,
+        weakness_category=WeaknessCategory.HESITATION,
+        target="呃",
+        severity=2,
+        feedback="Try the sentence again without filler sounds.",
+        example_sentence="请问我可以点菜了吗？",
+        recommended_drill="Say 请问我可以点菜了吗 slowly, then at normal speed.",
+    )
+
+    db = SessionLocal()
+    try:
+        get_or_create_user(db, user_id=user_id, mandarin_level="HSK1 beginner")
+        update_active_weaknesses(db, user_id=user_id, mistakes=[mistake])
+        second_update = update_active_weaknesses(
+            db,
+            user_id=user_id,
+            mistakes=[mistake],
+        )[0]
+        second_times_failed = second_update.times_failed
+        second_status = second_update.status
+        second_score = second_update.severity_score
+        third_update = update_active_weaknesses(
+            db,
+            user_id=user_id,
+            mistakes=[mistake],
+        )[0]
+    finally:
+        db.close()
+
+    assert second_times_failed == 2
+    assert second_status == WeaknessStatus.IMPROVING.value
+    assert 2.2 <= second_score <= 2.5
+    assert third_update.times_failed == 3
+    assert third_update.status == WeaknessStatus.ACTIVE.value
+    assert third_update.status != WeaknessStatus.RESOLVED.value
+
+
+def test_memory_excludes_resolved_weaknesses_from_active_list() -> None:
+    """Resolved rows stay in storage but not in active_weaknesses responses."""
+    user_id = "demo-user-resolved-filter"
+
+    db = SessionLocal()
+    try:
+        get_or_create_user(db, user_id=user_id, mandarin_level="HSK1 beginner")
+        db.add(
+            models.ActiveWeakness(
+                user_id=user_id,
+                weakness_category=WeaknessCategory.HESITATION.value,
+                weakness_name="hesitation and pauses",
+                severity_score=1.5,
+                times_failed=1,
+                status=WeaknessStatus.RESOLVED.value,
+                recommended_drill="Previously resolved drill.",
+            )
+        )
+        db.commit()
+        memory = get_memory(db, user_id=user_id)
+    finally:
+        db.close()
+
+    assert memory.active_weaknesses == []
+
+
+def test_lesson_plan_next_scenario_preserves_word_spaces() -> None:
+    """Lesson-plan creation normalizes whitespace without joining words."""
+    user_id = "demo-user-scenario-spacing"
+    analysis = AnalysisResponse(
+        mistakes=[],
+        fluency_score=80,
+        confidence_score=75,
+        summary="Good short turn.",
+        next_focus="restaurant ordering basics",
+        next_drill="Practice asking to order.",
+    )
+
+    db = SessionLocal()
+    try:
+        get_or_create_user(db, user_id=user_id, mandarin_level="HSK1 beginner")
+        lesson_plan = create_lesson_plan(
+            db,
+            user_id=user_id,
+            analysis=analysis,
+            memory=get_memory(db, user_id=user_id),
+            scenario="  restaurant   ordering  ",
+        )
+    finally:
+        db.close()
+
+    assert lesson_plan.next_scenario == "restaurant ordering"

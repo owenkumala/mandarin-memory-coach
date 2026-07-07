@@ -76,7 +76,12 @@ def get_memory(db: Session, user_id: str) -> MemoryResponse:
 
     weaknesses = (
         db.query(models.ActiveWeakness)
-        .filter(models.ActiveWeakness.user_id == user_id)
+        .filter(
+            models.ActiveWeakness.user_id == user_id,
+            models.ActiveWeakness.status.in_(
+                [WeaknessStatus.ACTIVE.value, WeaknessStatus.IMPROVING.value]
+            ),
+        )
         .order_by(desc(models.ActiveWeakness.severity_score), desc(models.ActiveWeakness.last_seen))
         .all()
     )
@@ -206,7 +211,7 @@ def _create_active_weakness(
         weakness_name=WEAKNESS_NAMES[mistake.weakness_category],
         severity_score=severity_score,
         times_failed=1,
-        status=_status_for_score(severity_score).value,
+        status=_status_for_observed_weakness(severity_score, times_failed=1).value,
         recommended_drill=mistake.recommended_drill,
         last_seen=utc_now(),
     )
@@ -218,7 +223,7 @@ def _apply_weakness_score_update(
 ) -> None:
     """Apply the custom longitudinal recurrence scoring formula."""
     weakness.times_failed += 1
-    recurrence_bonus = min(weakness.times_failed / 5, 1.0)
+    recurrence_bonus = min((weakness.times_failed - 1) * 0.25, 1.0)
     weighted_score = (
         weakness.severity_score * 0.65
         + mistake.severity * 0.25
@@ -226,21 +231,22 @@ def _apply_weakness_score_update(
     )
     new_score = min(
         5.0,
-        max(float(mistake.severity), weighted_score),
+        max(float(mistake.severity) + recurrence_bonus, weighted_score),
     )
     weakness.severity_score = round(new_score, 2)
-    weakness.status = _status_for_score(new_score).value
+    weakness.status = _status_for_observed_weakness(
+        new_score,
+        times_failed=weakness.times_failed,
+    ).value
     weakness.recommended_drill = mistake.recommended_drill
     weakness.last_seen = utc_now()
 
 
-def _status_for_score(score: float) -> WeaknessStatus:
-    """Map a numeric weakness score into the public status enum."""
-    if score >= 4.0:
+def _status_for_observed_weakness(score: float, times_failed: int) -> WeaknessStatus:
+    """Map a newly observed weakness into active or improving memory status."""
+    if score >= 4.0 or times_failed >= 3:
         return WeaknessStatus.ACTIVE
-    if score >= 2.5:
-        return WeaknessStatus.IMPROVING
-    return WeaknessStatus.RESOLVED
+    return WeaknessStatus.IMPROVING
 
 
 def _to_active_weakness_response(
