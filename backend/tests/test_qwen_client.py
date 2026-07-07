@@ -1,14 +1,18 @@
 """Unit tests for fake and real-mode Qwen client helpers."""
 
 import asyncio
+import logging
+import os
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import certifi
 from dashscope.common.error import DashScopeException
 from openai import APIConnectionError, APITimeoutError
 import pytest
 
+from app.core.certificates import configure_python_ssl_certificates
 from app.core.config import Settings
 from app.schemas import AnalysisResponse, MemoryResponse
 from app.services import qwen_client
@@ -442,6 +446,36 @@ def test_python_cert_diagnostics_do_not_print_secrets(capsys) -> None:
     assert "dash-secret" not in output
 
 
+def test_configure_python_ssl_certificates_sets_missing_env(
+    monkeypatch,
+    caplog,
+) -> None:
+    """Certificate helper sets missing SSL env vars to certifi for this process."""
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+
+    with caplog.at_level(logging.INFO, logger="app.core.certificates"):
+        configure_python_ssl_certificates()
+
+    assert os.environ["SSL_CERT_FILE"] == certifi.where()
+    assert os.environ["REQUESTS_CA_BUNDLE"] == certifi.where()
+    assert "Configured certifi CA bundle" in caplog.text
+    assert "secret" not in caplog.text.lower()
+
+
+def test_configure_python_ssl_certificates_does_not_overwrite_existing_env(
+    monkeypatch,
+) -> None:
+    """Certificate helper preserves user-provided certificate env vars."""
+    monkeypatch.setenv("SSL_CERT_FILE", "/custom/ssl.pem")
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", "/custom/requests.pem")
+
+    configure_python_ssl_certificates()
+
+    assert os.environ["SSL_CERT_FILE"] == "/custom/ssl.pem"
+    assert os.environ["REQUESTS_CA_BUNDLE"] == "/custom/requests.pem"
+
+
 def test_qwen_tts_diagnostics_do_not_print_secrets(capsys) -> None:
     """TTS diagnostics print key presence flags without leaking key values."""
     print_tts_config(
@@ -460,6 +494,7 @@ def test_qwen_tts_diagnostics_do_not_print_secrets(capsys) -> None:
     output = capsys.readouterr().out
     assert "has_QWEN_API_KEY=yes" in output
     assert "has_DASHSCOPE_API_KEY=yes" in output
+    assert "automatic_certifi_configuration=active" in output
     assert "qwen-secret" not in output
     assert "dash-secret" not in output
 

@@ -167,7 +167,15 @@ the WebSocket TLS handshake can fail even when the Qwen key and model are
 correct. Do not disable SSL verification, and do not set `cert_reqs` to
 `ssl.CERT_NONE`.
 
-Install or refresh `certifi`, then point Python clients at its CA bundle:
+The backend now auto-configures Python SSL certificate environment variables
+at app startup. If `SSL_CERT_FILE` or `REQUESTS_CA_BUNDLE` are missing, it sets
+them for the current Python process to `certifi.where()` before routes or
+Qwen/DashScope clients are used. Existing user-provided values are never
+overwritten.
+
+Manual exports are only needed when you want explicit shell-level configuration
+or when debugging outside the FastAPI process. For manual shell setup, install
+or refresh `certifi`, then point Python clients at its CA bundle:
 
 ```bash
 python3 -m pip install --upgrade certifi
@@ -182,8 +190,8 @@ open "/Applications/Python 3.14/Install Certificates.command"
 ```
 
 Use the matching Python version in that path if your local Python is not 3.14.
-To make the certifi fix permanent, manually add the two `export` lines above to
-`~/.zshrc`.
+To make the shell-level certifi fix permanent, manually add the two `export`
+lines above to `~/.zshrc`.
 
 On Linux or Alibaba Cloud deployment targets, ensure the system CA bundle is
 installed and up to date, for example with the distro `ca-certificates` package.
@@ -199,7 +207,8 @@ python3 scripts/check_qwen_tts.py
 `check_python_certs.py` treats a DashScope 401 `InvalidApiKey` or
 `No API-key provided` response as a good connectivity result because it means
 TLS and network access reached DashScope. The TTS script prints whether keys are
-configured, but never prints key values.
+configured, but never prints key values. Both scripts also call the same
+automatic certifi configuration helper before running diagnostics.
 
 ## What is real
 

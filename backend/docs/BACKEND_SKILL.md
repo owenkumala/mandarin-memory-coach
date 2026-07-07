@@ -80,6 +80,9 @@ points to stored tutor audio when optional Qwen/DashScope TTS is configured.
 - TTS is optional. `synthesize_speech()` returns `None` when
   `USE_FAKE_TTS=true`, and can call DashScope CosyVoice TTS v2 when
   `USE_FAKE_TTS=false`.
+- The backend auto-configures `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` to
+  `certifi.where()` for the current Python process when those env vars are
+  missing, so Qwen CosyVoice WSS can work without manual exports.
 
 ### Recommended model settings
 

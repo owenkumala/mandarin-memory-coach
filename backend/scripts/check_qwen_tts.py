@@ -6,6 +6,7 @@ QwenClient.synthesize_speech path used by `/voice-chat`.
 
 import argparse
 import asyncio
+import os
 from pathlib import Path
 import sys
 
@@ -15,6 +16,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from app.core.certificates import configure_python_ssl_certificates  # noqa: E402
 from app.core.config import Settings  # noqa: E402
 from app.services.qwen_client import QwenClient  # noqa: E402
 
@@ -38,8 +40,10 @@ def main() -> None:
     args = parser.parse_args()
 
     load_dotenv(BACKEND_DIR / ".env")
+    previous_env = certificate_env_sources()
+    configure_python_ssl_certificates()
     settings = Settings()
-    print_tts_config(settings)
+    print_tts_config(settings, previous_env)
 
     output_path = Path(args.output)
     if not output_path.is_absolute():
@@ -49,8 +53,12 @@ def main() -> None:
     print(result)
 
 
-def print_tts_config(settings: Settings) -> None:
+def print_tts_config(
+    settings: Settings,
+    previous_env: dict[str, str] | None = None,
+) -> None:
     """Print safe TTS configuration facts without exposing secret values."""
+    previous_env = previous_env or certificate_env_sources()
     print(f"USE_FAKE_TTS={settings.USE_FAKE_TTS}")
     print(f"QWEN_TTS_MODEL={settings.QWEN_TTS_MODEL}")
     print(f"QWEN_TTS_VOICE={settings.QWEN_TTS_VOICE}")
@@ -60,6 +68,12 @@ def print_tts_config(settings: Settings) -> None:
     print(f"has_DASHSCOPE_API_KEY={'yes' if settings.DASHSCOPE_API_KEY else 'no'}")
     print(f"SSL_CERT_FILE_set={'yes' if settings.SSL_CERT_FILE else 'no'}")
     print(f"REQUESTS_CA_BUNDLE_set={'yes' if settings.REQUESTS_CA_BUNDLE else 'no'}")
+    print("automatic_certifi_configuration=active")
+    print(f"SSL_CERT_FILE_source={_certificate_source(previous_env, 'SSL_CERT_FILE')}")
+    print(
+        "REQUESTS_CA_BUNDLE_source="
+        f"{_certificate_source(previous_env, 'REQUESTS_CA_BUNDLE')}"
+    )
 
     if not settings.SSL_CERT_FILE.strip() or not settings.REQUESTS_CA_BUNDLE.strip():
         print(
@@ -71,6 +85,21 @@ def print_tts_config(settings: Settings) -> None:
             "print(certifi.where())')\""
         )
         print('export REQUESTS_CA_BUNDLE="$SSL_CERT_FILE"')
+
+
+def certificate_env_sources() -> dict[str, str]:
+    """Return current certificate env var values for source diagnostics."""
+    return {
+        "SSL_CERT_FILE": os.environ.get("SSL_CERT_FILE", ""),
+        "REQUESTS_CA_BUNDLE": os.environ.get("REQUESTS_CA_BUNDLE", ""),
+    }
+
+
+def _certificate_source(previous_env: dict[str, str], name: str) -> str:
+    """Return whether a certificate setting came from user env or auto config."""
+    if previous_env.get(name):
+        return "user-env"
+    return "auto-certifi"
 
 
 async def run_tts_check(settings: Settings, text: str, output_path: Path) -> str:

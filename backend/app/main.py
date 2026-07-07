@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.router import api_router
+from app.core.certificates import configure_python_ssl_certificates
 from app.core.config import get_settings
 from app.db.database import create_database_tables
 from app.utils.audio import ensure_storage_directories
@@ -33,6 +34,7 @@ def configure_application_logging() -> None:
 def create_app() -> FastAPI:
     """Create and configure the FastAPI app without business logic."""
     configure_application_logging()
+    configure_python_ssl_certificates()
     settings = get_settings()
     ensure_storage_directories(
         settings.STORAGE_DIR,

@@ -6,6 +6,7 @@ that TLS and network connectivity reached the service.
 """
 
 import asyncio
+import os
 from pathlib import Path
 import platform
 import ssl
@@ -23,6 +24,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from app.core.certificates import configure_python_ssl_certificates  # noqa: E402
 from app.core.config import Settings  # noqa: E402
 
 WSS_TEST_URL = "wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference"
@@ -31,19 +33,30 @@ WSS_TEST_URL = "wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference"
 def main() -> None:
     """Load settings, print certificate diagnostics, and test WSS reachability."""
     load_dotenv(BACKEND_DIR / ".env")
+    previous_env = certificate_env_sources()
+    configure_python_ssl_certificates()
     settings = Settings()
 
-    print_certificate_diagnostics(settings)
+    print_certificate_diagnostics(settings, previous_env)
     result = asyncio.run(test_wss_connectivity(WSS_TEST_URL))
     print(result)
 
 
-def print_certificate_diagnostics(settings: Settings) -> None:
+def print_certificate_diagnostics(
+    settings: Settings,
+    previous_env: dict[str, str] | None = None,
+) -> None:
     """Print safe local Python and certificate configuration facts."""
+    previous_env = previous_env or certificate_env_sources()
     print(f"python_version={sys.version.split()[0]}")
     print(f"certifi_where={certifi.where()}")
     print(f"SSL_CERT_FILE={_display_env_value(settings.SSL_CERT_FILE)}")
+    print(f"SSL_CERT_FILE_source={_certificate_source(previous_env, 'SSL_CERT_FILE')}")
     print(f"REQUESTS_CA_BUNDLE={_display_env_value(settings.REQUESTS_CA_BUNDLE)}")
+    print(
+        "REQUESTS_CA_BUNDLE_source="
+        f"{_certificate_source(previous_env, 'REQUESTS_CA_BUNDLE')}"
+    )
 
     if not settings.SSL_CERT_FILE.strip() or not settings.REQUESTS_CA_BUNDLE.strip():
         print("certificate_exports_missing=true")
@@ -56,6 +69,21 @@ def print_certificate_diagnostics(settings: Settings) -> None:
     install_command = macos_install_certificates_command()
     if install_command:
         print(f"macos_framework_python_fix={install_command}")
+
+
+def certificate_env_sources() -> dict[str, str]:
+    """Return current certificate env var values for source diagnostics."""
+    return {
+        "SSL_CERT_FILE": os.environ.get("SSL_CERT_FILE", ""),
+        "REQUESTS_CA_BUNDLE": os.environ.get("REQUESTS_CA_BUNDLE", ""),
+    }
+
+
+def _certificate_source(previous_env: dict[str, str], name: str) -> str:
+    """Return whether a certificate setting came from user env or auto config."""
+    if previous_env.get(name):
+        return "user-env"
+    return "auto-certifi"
 
 
 async def test_wss_connectivity(url: str) -> str:
