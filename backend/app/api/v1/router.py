@@ -2,10 +2,17 @@
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import health, lesson_plan, memory, voice_chat
+from app.api.v1.endpoints import (
+    health,
+    lesson_plan,
+    memory,
+    voice_chat,
+    voice_chat_realtime,
+)
 
 api_router = APIRouter()
 api_router.include_router(health.router)
 api_router.include_router(voice_chat.router)
+api_router.include_router(voice_chat_realtime.router)
 api_router.include_router(memory.router)
 api_router.include_router(lesson_plan.router)

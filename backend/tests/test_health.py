@@ -1,6 +1,7 @@
 """Endpoint tests for the fake-Qwen SpeakHan backend MVP."""
 
 import asyncio
+import base64
 import os
 import shutil
 import tempfile
@@ -37,6 +38,10 @@ from app.services.memory_service import (  # noqa: E402
     update_active_weaknesses,
 )
 from app.services.qwen_client import QwenClient  # noqa: E402
+from app.services.sentence_tts_pipeline import (  # noqa: E402
+    SentenceTtsPipeline,
+    split_complete_sentences,
+)
 from app.services.voice_chat_service import _generate_tutor_audio_url  # noqa: E402
 
 
@@ -63,6 +68,30 @@ def _voice_chat_response(
         },
         files={"audio": (filename, content, "audio/webm")},
     )
+
+
+def _receive_realtime_events_until_done(websocket: object) -> list[dict]:
+    """Receive realtime WebSocket events until the terminal done event."""
+    events = []
+    while True:
+        event = websocket.receive_json()
+        events.append(event)
+        if event["type"] == "done":
+            return events
+
+
+def _first_event(events: list[dict], event_type: str) -> dict:
+    """Return the first realtime event with the requested type."""
+    for event in events:
+        if event["type"] == event_type:
+            return event
+    raise AssertionError(f"Missing realtime event: {event_type}")
+
+
+async def _fake_realtime_transcribe_audio(self: QwenClient, audio_path: str) -> str:
+    """Return a deterministic transcript without calling live Qwen ASR."""
+    assert Path(audio_path).exists()
+    return "我想点菜"
 
 
 def test_health_returns_backend_status() -> None:
@@ -259,6 +288,219 @@ def test_tutor_audio_paths_are_unique(monkeypatch) -> None:
         assert path.parent.name == "demo-user-unique-tts"
         assert path.name.startswith("reply-")
         assert path.name.endswith(".mp3")
+
+
+def test_realtime_voice_chat_accepts_hsk3_and_emits_ordered_events(monkeypatch) -> None:
+    """WS /voice-chat/realtime streams events and passes HSK3 into Qwen calls."""
+    captured_levels = {}
+
+    async def fake_transcribe_audio(self: QwenClient, audio_path: str) -> str:
+        """Return a deterministic transcript without calling live Qwen ASR."""
+        assert Path(audio_path).exists()
+        return "我想点菜"
+
+    async def fake_stream_tutor_reply(
+        self: QwenClient,
+        transcript: str,
+        memory: object,
+        scenario: str,
+        level: str,
+    ):
+        """Yield deterministic tutor chunks and capture the learner level."""
+        captured_levels["stream"] = level
+        yield "很好，你可以说：我想点一份中国菜。"
+
+    async def fake_analyze_mistakes(
+        self: QwenClient,
+        transcript: str,
+        scenario: str,
+        level: str,
+    ) -> AnalysisResponse:
+        """Return structured feedback and capture the learner level."""
+        captured_levels["analysis"] = level
+        return AnalysisResponse(
+            mistakes=[],
+            fluency_score=82,
+            confidence_score=78,
+            summary=f"Realtime analysis for {level}",
+            next_focus="restaurant ordering scenario vocabulary",
+            next_drill="Practice ordering one dish and one drink.",
+        )
+
+    async def fake_synthesize_speech(
+        self: QwenClient,
+        text: str,
+        output_path: str,
+    ) -> str:
+        """Write fake sentence audio without calling live Qwen TTS."""
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake realtime tutor audio")
+        return str(path)
+
+    monkeypatch.setattr(QwenClient, "transcribe_audio", fake_transcribe_audio)
+    monkeypatch.setattr(QwenClient, "stream_tutor_reply", fake_stream_tutor_reply)
+    monkeypatch.setattr(QwenClient, "analyze_mistakes", fake_analyze_mistakes)
+    monkeypatch.setattr(QwenClient, "synthesize_speech", fake_synthesize_speech)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/voice-chat/realtime") as websocket:
+            websocket.send_json(
+                {
+                    "type": "start",
+                    "user_id": "demo-user-realtime-hsk3",
+                    "scenario": "restaurant ordering",
+                    "level": "HSK3 lower intermediate",
+                }
+            )
+            websocket.send_json(
+                {
+                    "type": "audio_chunk",
+                    "audio_base64": base64.b64encode(b"fake audio").decode("ascii"),
+                }
+            )
+            websocket.send_json({"type": "end_audio"})
+            events = _receive_realtime_events_until_done(websocket)
+
+    event_types = [event["type"] for event in events]
+    assert event_types[0] == "session_started"
+    assert "audio_received" in event_types
+    assert "asr_final" in event_types
+    assert "tutor_token" in event_types
+    assert "tutor_sentence" in event_types
+    assert "audio_chunk_ready" in event_types
+    assert "feedback_ready" in event_types
+    assert "memory_updated" in event_types
+    assert event_types[-1] == "done"
+    assert event_types.index("asr_final") < event_types.index("tutor_token")
+    assert event_types.index("audio_chunk_ready") < event_types.index("feedback_ready")
+    assert captured_levels == {
+        "stream": "HSK3 lower intermediate",
+        "analysis": "HSK3 lower intermediate",
+    }
+    session_event = events[0]
+    assert session_event["payload"]["level"] == "HSK3 lower intermediate"
+    memory_event = _first_event(events, "memory_updated")
+    assert memory_event["payload"]["memory_after"]["learner_level"] == (
+        "HSK3 lower intermediate"
+    )
+
+
+def test_realtime_voice_chat_defaults_missing_level_to_hsk1(monkeypatch) -> None:
+    """Realtime start messages default to HSK1 when level is omitted."""
+    monkeypatch.setattr(
+        QwenClient,
+        "transcribe_audio",
+        _fake_realtime_transcribe_audio,
+    )
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/voice-chat/realtime") as websocket:
+            websocket.send_json(
+                {
+                    "type": "start",
+                    "user_id": "demo-user-realtime-default-level",
+                    "scenario": "restaurant ordering",
+                }
+            )
+            event = websocket.receive_json()
+
+    assert event["type"] == "session_started"
+    assert event["payload"]["level"] == "HSK1 beginner"
+
+
+def test_sentence_tts_splitter_detects_chinese_and_english_punctuation() -> None:
+    """Sentence splitting detects Chinese punctuation and common English endings."""
+    sentences, remainder = split_complete_sentences("你好！我想点菜。Can I order? unfinished")
+
+    assert sentences == ["你好！", "我想点菜。", "Can I order?"]
+    assert remainder == " unfinished"
+
+
+def test_realtime_tts_chunk_paths_are_unique() -> None:
+    """Sentence TTS chunk filenames are unique and sequence-prefixed."""
+    pipeline = SentenceTtsPipeline(
+        qwen_client=QwenClient(settings=get_settings()),
+        settings=get_settings(),
+        user_id="demo-user-realtime-unique",
+    )
+
+    first_path = pipeline._build_chunk_path(1)
+    second_path = pipeline._build_chunk_path(1)
+
+    assert first_path != second_path
+    assert first_path.parent.name == "demo-user-realtime-unique"
+    assert first_path.name.startswith("chunk-1-")
+    assert first_path.name.endswith(".mp3")
+
+
+def test_realtime_tts_failure_sends_warning_and_continues(monkeypatch) -> None:
+    """A failed sentence TTS chunk emits an error event without stopping the WS."""
+    async def fake_stream_tutor_reply(
+        self: QwenClient,
+        transcript: str,
+        memory: object,
+        scenario: str,
+        level: str,
+    ):
+        """Yield two complete sentences so the second can still produce audio."""
+        yield "第一句。第二句。"
+
+    async def fake_analyze_mistakes(
+        self: QwenClient,
+        transcript: str,
+        scenario: str,
+        level: str,
+    ) -> AnalysisResponse:
+        """Return minimal structured feedback for the realtime test."""
+        return AnalysisResponse(
+            mistakes=[],
+            fluency_score=80,
+            confidence_score=80,
+            summary="Realtime analysis",
+            next_focus="sentence flow",
+            next_drill="Repeat the second sentence.",
+        )
+
+    async def fake_synthesize_speech(
+        self: QwenClient,
+        text: str,
+        output_path: str,
+    ) -> str:
+        """Fail the first sentence and write fake audio for later sentences."""
+        if "chunk-1-" in output_path:
+            raise ValueError("Qwen TTS request failed.")
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake realtime tutor audio")
+        return str(path)
+
+    monkeypatch.setattr(QwenClient, "transcribe_audio", _fake_realtime_transcribe_audio)
+    monkeypatch.setattr(QwenClient, "stream_tutor_reply", fake_stream_tutor_reply)
+    monkeypatch.setattr(QwenClient, "analyze_mistakes", fake_analyze_mistakes)
+    monkeypatch.setattr(QwenClient, "synthesize_speech", fake_synthesize_speech)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/voice-chat/realtime") as websocket:
+            websocket.send_json({"type": "start", "user_id": "demo-user-realtime-tts"})
+            websocket.send_json(
+                {
+                    "type": "audio_chunk",
+                    "audio_base64": base64.b64encode(b"fake audio").decode("ascii"),
+                }
+            )
+            websocket.send_json({"type": "end_audio"})
+            events = _receive_realtime_events_until_done(websocket)
+
+    warning_events = [
+        event
+        for event in events
+        if event["type"] == "error"
+        and event["payload"]["code"] == "tts_sentence_failed"
+    ]
+    assert warning_events
+    assert _first_event(events, "audio_chunk_ready")["payload"]["sequence"] == 2
+    assert events[-1]["type"] == "done"
 
 
 def test_repeated_mistake_score_stays_at_or_above_latest_severity() -> None:

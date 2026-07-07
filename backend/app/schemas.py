@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -34,6 +35,29 @@ class WeaknessStatus(str, Enum):
     ACTIVE = "active"
     IMPROVING = "improving"
     RESOLVED = "resolved"
+
+
+class RealtimeVoiceEventType(str, Enum):
+    """WebSocket event types emitted by the realtime voice-chat pipeline."""
+
+    SESSION_STARTED = "session_started"
+    AUDIO_RECEIVED = "audio_received"
+    ASR_PARTIAL = "asr_partial"
+    ASR_FINAL = "asr_final"
+    TUTOR_TOKEN = "tutor_token"
+    TUTOR_SENTENCE = "tutor_sentence"
+    AUDIO_CHUNK_READY = "audio_chunk_ready"
+    FEEDBACK_READY = "feedback_ready"
+    MEMORY_UPDATED = "memory_updated"
+    ERROR = "error"
+    DONE = "done"
+
+
+class RealtimeVoiceEvent(BaseModel):
+    """One frontend-consumable event emitted over realtime voice WebSockets."""
+
+    type: RealtimeVoiceEventType
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class HealthResponse(BaseModel):

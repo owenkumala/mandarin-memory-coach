@@ -8,6 +8,25 @@ and structured analysis when `USE_FAKE_QWEN=false`. This keeps the endpoint
 response shape unchanged while reducing latency versus two sequential Qwen
 chat requests.
 
+The stable REST endpoint remains:
+
+```text
+POST /api/v1/voice-chat
+```
+
+It returns one complete response after ASR, tutor reply, structured feedback,
+memory update, lesson-plan update, and optional TTS finish.
+
+The progressive realtime endpoint is:
+
+```text
+WS /api/v1/voice-chat/realtime
+```
+
+It emits frontend-ready events while the pipeline runs, so the UI can show ASR
+progress, stream the tutor reply, and play sentence-level audio chunks as soon
+as they are ready.
+
 ## Local setup
 
 Create or update `backend/.env` with:
@@ -119,8 +138,22 @@ server-side fetcher accepts. `local_path` and `file_url` remain diagnostic modes
 only. Signed URLs must not be printed with query parameters because those query
 strings can contain signature data.
 
-`qwen3-asr-flash-realtime` is a WebSocket streaming model and is not implemented
-yet. This backend currently implements upload-style ASR with `qwen3-asr-flash`.
+`qwen3-asr-flash-realtime` is intended for WebSocket streaming ASR, but this
+branch does not invent an unsupported protocol. Local SDK inspection found:
+
+- `dashscope.audio.asr.Recognition`, which exposes an official websocket-style
+  recognition interface with `start()`, `send_audio_frame()`, and `stop()`.
+- `dashscope.audio.qwen_asr.QwenTranscription`, which is a Qwen batch
+  transcription API.
+- no clear local SDK class or sample that maps `qwen3-asr-flash` or
+  `qwen3-asr-flash-realtime` to a supported realtime Qwen ASR session.
+
+The realtime WebSocket endpoint therefore uses a `RealtimeAsrSession`
+abstraction with a buffered fallback implementation: the frontend sends base64
+audio chunks, the backend stores them, and on `end_audio` it reuses the stable
+`transcribe_audio()` path. If Qwen publishes or confirms the realtime model
+contract for this SDK, the provider-specific session should be added behind the
+same abstraction and emit `asr_partial` and `asr_final` events.
 
 TTS is optional and configured separately with `USE_FAKE_TTS`. When
 `USE_FAKE_TTS=true`, the backend keeps returning `tutor_audio_url=null` and the
@@ -216,9 +249,78 @@ automatic certifi configuration helper before running diagnostics.
   feedback when `USE_FAKE_QWEN=false`.
 - The separate `generate_tutor_reply()` and `analyze_mistakes()` methods remain
   available for focused tests and future use.
+- `stream_tutor_reply()` uses OpenAI-compatible streaming chat for the realtime
+  endpoint when `USE_FAKE_QWEN=false`.
 - Structured feedback is validated into the existing `AnalysisResponse` schema.
 - `transcribe_audio()` calls DashScope native Qwen ASR when
   `USE_FAKE_QWEN=false`, `USE_FAKE_ASR=false`, and ASR settings are configured.
+
+## Realtime WebSocket protocol
+
+Frontend control messages are JSON objects:
+
+```json
+{"type": "start", "user_id": "demo-user-1", "scenario": "restaurant ordering", "level": "HSK3 lower intermediate"}
+{"type": "audio_chunk", "audio_base64": "..."}
+{"type": "end_audio"}
+{"type": "cancel"}
+```
+
+If `level` is missing from `start`, the backend defaults to `HSK1 beginner`.
+The level is stored on the learner record and passed into the same tutor and
+feedback logic used by REST `/voice-chat`. HSK behavior is level-adaptive:
+
+- HSK1 focuses on short survival phrases, pronunciation, tones, survival
+  vocabulary, and simple grammar.
+- HSK2 uses simple connected sentences and basic question patterns.
+- HSK3 uses longer practical sentences and more scenario vocabulary.
+- HSK4 uses more natural conversation and more correction detail.
+- HSK5/6 focuses on nuanced expression, fluency, register, idiomatic usage,
+  word choice, naturalness, and discourse structure.
+
+The backend emits events in this shape:
+
+```json
+{"type": "session_started", "payload": {"session_id": "...", "level": "HSK3 lower intermediate"}}
+```
+
+Supported event types:
+
+- `session_started`: emitted immediately after the `start` message is accepted.
+- `audio_received`: confirms each buffered audio chunk.
+- `asr_partial`: reserved for future true streaming ASR support.
+- `asr_final`: final transcript after buffered or realtime ASR completes.
+- `tutor_token`: streamed tutor text chunk.
+- `tutor_sentence`: completed sentence ready for TTS processing.
+- `audio_chunk_ready`: sentence-level TTS MP3/WAV is ready.
+- `feedback_ready`: structured `AnalysisResponse` is ready.
+- `memory_updated`: session, mistakes, active weaknesses, and lesson plan are
+  saved.
+- `error`: recoverable warning or terminal error.
+- `done`: terminal event for the session.
+
+Realtime mode intentionally splits user-facing tutor reply generation from
+structured feedback analysis. Tutor reply streaming starts first for perceived
+latency; structured feedback runs in parallel and is saved afterward. This
+avoids blocking the visible tutor response on JSON analysis.
+
+Sentence-level TTS runs as tutor tokens arrive. The backend finalizes sentences
+on `。！？!?` or newline, starts `synthesize_speech()` for each sentence, saves
+files as:
+
+```text
+storage/tutor_audio/<user_id>/chunk-<sequence>-<uuid>.mp3
+```
+
+Each successful TTS task emits:
+
+```json
+{"type": "audio_chunk_ready", "payload": {"sequence": 1, "audio_url": "/storage/tutor_audio/..."}}
+```
+
+The frontend should play `audio_chunk_ready` URLs in ascending `sequence` order.
+If one sentence TTS task fails, the backend emits an `error` event with
+`severity=warning` and continues later chunks where possible.
 
 Fake mode and TTS behavior:
 

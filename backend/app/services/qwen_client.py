@@ -8,7 +8,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from textwrap import dedent
 
@@ -86,6 +86,7 @@ class QwenClient:
             transcript=transcript,
             memory=memory,
             scenario=scenario,
+            level=level,
         )
         if self.settings.USE_FAKE_QWEN:
             return fake_reply
@@ -122,6 +123,64 @@ class QwenClient:
                 self.settings.QWEN_CHAT_MODEL,
             )
         return _extract_chat_content(response)
+
+    async def stream_tutor_reply(
+        self,
+        transcript: str,
+        memory: MemoryResponse,
+        scenario: str,
+        level: str,
+    ) -> AsyncIterator[str]:
+        """Yield tutor reply text chunks from fake mode or Qwen streaming chat."""
+        fake_reply = _fake_tutor_reply(
+            transcript=transcript,
+            memory=memory,
+            scenario=scenario,
+            level=level,
+        )
+        if self.settings.USE_FAKE_QWEN:
+            for chunk in _fake_stream_chunks(fake_reply):
+                yield chunk
+            return
+
+        client = self._real_client()
+        started_at = time.perf_counter()
+        try:
+            stream = await client.chat.completions.create(
+                model=self.settings.QWEN_CHAT_MODEL,
+                messages=[
+                    {"role": "system", "content": _tutor_system_prompt()},
+                    {
+                        "role": "user",
+                        "content": _tutor_user_prompt(
+                            transcript=transcript,
+                            memory=memory,
+                            scenario=scenario,
+                            level=level,
+                        ),
+                    },
+                ],
+                temperature=0.4,
+                max_tokens=self.settings.QWEN_MAX_TUTOR_TOKENS,
+                stream=True,
+            )
+            async for chunk in stream:
+                text = _extract_stream_delta(chunk)
+                if text:
+                    yield text
+        except APITimeoutError as exc:
+            raise ValueError(
+                _qwen_timeout_message("streaming tutor reply", self.settings)
+            ) from exc
+        except OpenAIError as exc:
+            raise ValueError("Qwen streaming tutor reply request failed.") from exc
+        finally:
+            elapsed = time.perf_counter() - started_at
+            logger.info(
+                "qwen.tutor_reply_stream_seconds=%.2f model=%s",
+                elapsed,
+                self.settings.QWEN_CHAT_MODEL,
+            )
 
     async def analyze_mistakes(
         self,
@@ -185,6 +244,7 @@ class QwenClient:
                     transcript=transcript,
                     memory=memory,
                     scenario=scenario,
+                    level=level,
                 ),
                 _fake_analysis(
                     transcript=transcript,
@@ -262,8 +322,12 @@ class QwenClient:
 def _tutor_system_prompt() -> str:
     """Return the system prompt for spoken Mandarin tutoring."""
     return (
-        "You are SpeakHan, a Mandarin speaking coach for beginner Mandarin learners. "
-        "You speak mainly in simple Mandarin suitable for the learner level. "
+        "You are SpeakHan, a Mandarin speaking coach for HSK1-HSK6 learners. "
+        "You adapt strictly to the learner level supplied in the user prompt. "
+        "HSK1 uses short survival phrases, HSK2 uses simple connected sentences, "
+        "HSK3 uses longer practical scenario language, HSK4 uses more natural "
+        "conversation with correction detail, and HSK5/6 uses nuanced expression, "
+        "register, fluency, and idiomatic usage. "
         "You may include brief English explanations only when useful. "
         "You must adapt your reply based on the learner memory. "
         "Keep replies short, spoken, and suitable for text-to-speech."
@@ -647,12 +711,15 @@ def _turn_system_prompt() -> str:
     allowed_categories = ", ".join(category.value for category in WeaknessCategory)
     return dedent(
         f"""
-        You are SpeakHan, a Mandarin speaking coach for beginner Mandarin learners.
+        You are SpeakHan, a Mandarin speaking coach for HSK1-HSK6 learners.
         Return JSON only, with no markdown and no extra text.
         The response must include:
-        - tutor_reply: a short spoken tutor reply in simple Mandarin, with brief
-          English only when useful.
-        - feedback: structured Mandarin mistake analysis.
+        - tutor_reply: a short spoken tutor reply adapted to the learner HSK level,
+          with brief English only when useful.
+        - feedback: structured Mandarin mistake analysis adapted to the learner
+          HSK level.
+        Level rules:
+        {_level_guidance_text()}
         Allowed mistake types: {allowed_types}.
         Allowed weakness categories: {allowed_categories}.
         The JSON must match this exact shape:
@@ -692,6 +759,7 @@ def _tutor_user_prompt(
         Transcript: {transcript}
         Active weaknesses: {json.dumps(weaknesses, ensure_ascii=False)}
         Latest lesson plan: {json.dumps(latest_lesson_plan, ensure_ascii=False)}
+        Level guidance: {_level_guidance(level)}
 
         Reply as the Mandarin tutor. Make the learner feel guided, remember their
         weaknesses if present, and give one short next speaking prompt.
@@ -729,8 +797,13 @@ def _analysis_system_prompt() -> str:
     allowed_categories = ", ".join(category.value for category in WeaknessCategory)
     return dedent(
         f"""
-        You analyze beginner Mandarin speaking practice for SpeakHan.
+        You analyze Mandarin speaking practice for SpeakHan learners from HSK1
+        through HSK6.
         Return JSON only, with no markdown and no extra text.
+        Adapt feedback to the supplied level. Lower HSK feedback should focus on
+        pronunciation, tones, survival vocabulary, and simple grammar. Higher HSK
+        feedback should focus on fluency, word choice, naturalness, discourse
+        structure, register, and idiomatic usage.
         Allowed mistake types: {allowed_types}.
         Allowed weakness categories: {allowed_categories}.
         The JSON must match this exact shape:
@@ -750,6 +823,7 @@ def _analysis_user_prompt(transcript: str, scenario: str, level: str) -> str:
         Learner level: {level}
         Scenario: {scenario}
         Transcript: {transcript}
+        Level guidance: {_level_guidance(level)}
 
         Analyze this response for Mandarin pronunciation, tone, vocabulary,
         grammar, fluency, and hesitation weaknesses. Return only valid JSON.
@@ -761,25 +835,28 @@ def _fake_tutor_reply(
     transcript: str,
     memory: MemoryResponse,
     scenario: str,
+    level: str,
 ) -> str:
     """Return the stable fake tutor reply used by tests and local demos."""
+    level_prompt = _fake_level_prompt(level)
     if memory.active_weaknesses:
         weakness_names = "、".join(
             weakness.weakness_name for weakness in memory.active_weaknesses[:3]
         )
         return (
             f"欢迎回来！我记得你之前需要练习 {weakness_names}。"
-            f"我们先热身，然后继续{scenario}练习。你可以说：我想吃中国菜。"
+            f"我们先热身，然后继续{scenario}练习。{level_prompt}"
         )
 
     return (
         f"很好！你说的是：{transcript}。我们现在练习{scenario}。"
-        "你可以继续说：我想喝茶。"
+        f"{level_prompt}"
     )
 
 
 def _fake_analysis(transcript: str, scenario: str, level: str) -> AnalysisResponse:
     """Return the stable fake structured feedback for tests and local demos."""
+    next_focus, next_drill, fluency_drill = _fake_analysis_drills(level)
     mistakes = [
         MistakeAnalysis(
             type=MistakeType.PRONUNCIATION,
@@ -797,7 +874,7 @@ def _fake_analysis(transcript: str, scenario: str, level: str) -> AnalysisRespon
             severity=3,
             feedback="Try answering with a complete sentence instead of a short phrase.",
             example_sentence="我想吃中国菜，也想喝茶。",
-            recommended_drill="Extend answers with 也想, 多少钱, and 我喜欢.",
+            recommended_drill=fluency_drill,
         ),
     ]
     return AnalysisResponse(
@@ -805,8 +882,8 @@ def _fake_analysis(transcript: str, scenario: str, level: str) -> AnalysisRespon
         fluency_score=65,
         confidence_score=60,
         summary=f"Fake analysis for {level} {scenario}: {transcript}",
-        next_focus="restaurant ordering with clearer zh/ch sounds and fuller answers",
-        next_drill="Practice 中国菜, 想吃, 多少钱, and 我想喝茶.",
+        next_focus=next_focus,
+        next_drill=next_drill,
     )
 
 
@@ -819,6 +896,116 @@ def _extract_chat_content(response: object) -> str:
     if not isinstance(content, str) or not content.strip():
         raise ValueError("Qwen response content was empty.")
     return content.strip()
+
+
+def _extract_stream_delta(chunk: object) -> str:
+    """Extract a text delta from one OpenAI-compatible streaming chunk."""
+    try:
+        delta = chunk.choices[0].delta
+    except (AttributeError, IndexError):
+        return ""
+    content = getattr(delta, "content", None)
+    if isinstance(content, str):
+        return content
+    return ""
+
+
+def _fake_stream_chunks(text: str) -> list[str]:
+    """Return deterministic fake streaming chunks for tests and local demos."""
+    chunk_size = 8
+    return [
+        text[index : index + chunk_size]
+        for index in range(0, len(text), chunk_size)
+    ]
+
+
+def _level_guidance(level: str) -> str:
+    """Return the HSK adaptation rule that best matches a learner level."""
+    normalized_level = level.lower()
+    if "hsk6" in normalized_level or "hsk5" in normalized_level:
+        return (
+            "Use nuanced expressions, fluency coaching, register, idiomatic usage, "
+            "word choice, sentence naturalness, and discourse structure."
+        )
+    if "hsk4" in normalized_level:
+        return (
+            "Use more natural conversation, connected correction detail, and "
+            "practical grammar explanations."
+        )
+    if "hsk3" in normalized_level:
+        return (
+            "Use longer practical sentences, scenario vocabulary, and manageable "
+            "follow-up questions."
+        )
+    if "hsk2" in normalized_level:
+        return (
+            "Use simple connected sentences, basic question patterns, and everyday "
+            "vocabulary."
+        )
+    return (
+        "Use short simple survival phrases, pronunciation and tone coaching, "
+        "survival vocabulary, and simple grammar."
+    )
+
+
+def _level_guidance_text() -> str:
+    """Return compact HSK level rules for Qwen system prompts."""
+    return (
+        "HSK1: short, simple survival phrases. "
+        "HSK2: simple connected sentences and basic question patterns. "
+        "HSK3: longer practical sentences and more scenario vocabulary. "
+        "HSK4: natural conversation and more correction detail. "
+        "HSK5/6: nuanced expressions, fluency, register, idiomatic usage, word "
+        "choice, naturalness, and discourse structure."
+    )
+
+
+def _fake_level_prompt(level: str) -> str:
+    """Return a deterministic fake next prompt that is not locked to HSK1."""
+    normalized_level = level.lower()
+    if "hsk6" in normalized_level or "hsk5" in normalized_level:
+        return "你可以继续说：这家餐厅的口味很地道，不过价格稍微有点高。"
+    if "hsk4" in normalized_level:
+        return "你可以继续说：请问你们有什么推荐的特色菜？"
+    if "hsk3" in normalized_level:
+        return "你可以继续说：我想点一份中国菜，还想要一杯热茶。"
+    if "hsk2" in normalized_level:
+        return "你可以继续说：我想吃饭，也想喝茶。"
+    return "你可以继续说：我想喝茶。"
+
+
+def _fake_analysis_drills(level: str) -> tuple[str, str, str]:
+    """Return deterministic fake feedback drills adapted to learner level."""
+    normalized_level = level.lower()
+    if "hsk6" in normalized_level or "hsk5" in normalized_level:
+        return (
+            "restaurant ordering with natural register and nuanced word choice",
+            "Practice 地道, 口味偏淡, 性价比, and 更符合我的口味.",
+            "Extend answers with nuanced preference and register choices.",
+        )
+    if "hsk4" in normalized_level:
+        return (
+            "restaurant ordering with natural follow-up questions",
+            "Practice 特色菜, 推荐, 口味, and 请问你们有什么推荐.",
+            "Extend answers with reasons and polite follow-up questions.",
+        )
+    if "hsk3" in normalized_level:
+        return (
+            "restaurant ordering with fuller practical sentences",
+            "Practice 一份中国菜, 还想要一杯热茶, 一共多少钱.",
+            "Extend answers with 一份, 还想要, 一共多少钱, and 因为.",
+        )
+    if "hsk2" in normalized_level:
+        return (
+            "restaurant ordering with simple connected sentences",
+            "Practice 我想吃饭, 也想喝茶, 你有中国菜吗.",
+            "Extend answers with 也想, 有吗, and simple question patterns.",
+        )
+    return (
+        "restaurant ordering with clearer zh/ch sounds and fuller answers",
+        "Practice 中国菜, 想吃, 多少钱, and 我想喝茶.",
+        "Extend answers with 也想, 多少钱, and 我喜欢.",
+    )
 
 
 def _extract_asr_transcript(response: object) -> str:
