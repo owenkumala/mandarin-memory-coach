@@ -260,7 +260,7 @@ automatic certifi configuration helper before running diagnostics.
 Frontend control messages are JSON objects:
 
 ```json
-{"type": "start", "user_id": "demo-user-1", "scenario": "restaurant ordering", "level": "HSK3 lower intermediate"}
+{"type": "start", "user_id": "demo-user-1", "scenario": "restaurant ordering", "level": "HSK3 lower intermediate", "audio_filename": "sample-mandarin.mp3", "audio_mime_type": "audio/mpeg"}
 {"type": "audio_chunk", "audio_base64": "..."}
 {"type": "end_audio"}
 {"type": "cancel"}
@@ -277,6 +277,14 @@ feedback logic used by REST `/voice-chat`. HSK behavior is level-adaptive:
 - HSK4 uses more natural conversation and more correction detail.
 - HSK5/6 focuses on nuanced expression, fluency, register, idiomatic usage,
   word choice, naturalness, and discourse structure.
+
+Realtime `start` may include optional audio metadata. If `audio_filename` or
+`audio_mime_type` is missing, the backend defaults to `realtime.webm` and
+`audio/webm`, which is the normal browser microphone path. The backend sanitizes
+the filename to a safe basename and only preserves `.mp3`, `.m4a`, `.wav`, or
+`.webm`; unsupported extensions fall back to `.webm`. Correct extension metadata
+matters because S3/OSS upload content type is inferred from the saved file
+suffix before Qwen ASR fetches the audio URL.
 
 The backend emits events in this shape:
 
@@ -470,8 +478,10 @@ python3 scripts/check_realtime_voice_ws.py \
 
 The script connects to
 `ws://localhost:8000/api/v1/voice-chat/realtime` by default. Override with
-`--url` if the backend is running somewhere else. It prints event timing without
-printing secrets or raw audio:
+`--url` if the backend is running somewhere else. It infers `audio_filename` and
+`audio_mime_type` from `--audio` (`.mp3`, `.m4a`, `.wav`, or `.webm`) and sends
+that metadata in the `start` message. It prints event timing without printing
+secrets or raw audio:
 
 ```text
 0.00s session_started payload_keys=session_id,user_id,scenario,level,asr_mode

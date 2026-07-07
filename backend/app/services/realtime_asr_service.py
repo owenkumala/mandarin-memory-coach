@@ -9,6 +9,7 @@ import base64
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from app.core.config import Settings
 from app.schemas import RealtimeVoiceEvent, RealtimeVoiceEventType
@@ -20,6 +21,14 @@ from app.utils.audio import (
 )
 
 logger = logging.getLogger(__name__)
+DEFAULT_REALTIME_AUDIO_FILENAME = "realtime.webm"
+DEFAULT_REALTIME_AUDIO_MIME_TYPE = "audio/webm"
+REALTIME_AUDIO_MIME_TYPES = {
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".wav": "audio/wav",
+    ".webm": "audio/webm",
+}
 
 
 @dataclass
@@ -53,6 +62,8 @@ class BufferedRealtimeAsrSession(RealtimeAsrSession):
     qwen_client: QwenClient
     settings: Settings
     user_id: str
+    audio_filename: str = DEFAULT_REALTIME_AUDIO_FILENAME
+    audio_mime_type: str = DEFAULT_REALTIME_AUDIO_MIME_TYPE
     chunks: list[bytes] = field(default_factory=list)
     bytes_received: int = 0
 
@@ -82,15 +93,23 @@ class BufferedRealtimeAsrSession(RealtimeAsrSession):
             len(audio_content),
             len(self.chunks),
         )
+        logger.info(
+            "realtime.asr_audio_filename=%s "
+            "realtime.asr_audio_mime_type=%s "
+            "realtime.asr_audio_extension=%s",
+            self.audio_filename,
+            self.audio_mime_type,
+            Path(self.audio_filename).suffix.lower(),
+        )
         validate_audio_upload(
-            "realtime.webm",
+            self.audio_filename,
             audio_content,
             self.settings.MAX_AUDIO_UPLOAD_BYTES,
         )
         audio_path = build_audio_file_path(
             self.settings.USER_AUDIO_DIR,
             self.user_id,
-            "realtime.webm",
+            self.audio_filename,
         )
         save_started_at = time.perf_counter()
         logger.info("realtime.asr_save_audio_start")
@@ -114,13 +133,55 @@ def build_realtime_asr_session(
     qwen_client: QwenClient,
     settings: Settings,
     user_id: str,
+    audio_filename: str | None = None,
+    audio_mime_type: str | None = None,
 ) -> RealtimeAsrSession:
     """Return the best supported realtime ASR session for current settings."""
+    metadata = sanitize_realtime_audio_metadata(
+        audio_filename=audio_filename,
+        audio_mime_type=audio_mime_type,
+    )
     return BufferedRealtimeAsrSession(
         qwen_client=qwen_client,
         settings=settings,
         user_id=user_id,
+        audio_filename=metadata[0],
+        audio_mime_type=metadata[1],
     )
+
+
+def sanitize_realtime_audio_metadata(
+    audio_filename: str | None,
+    audio_mime_type: str | None,
+) -> tuple[str, str]:
+    """Return safe realtime audio filename and MIME metadata for buffered ASR."""
+    safe_filename = _safe_audio_basename(audio_filename)
+    extension = Path(safe_filename).suffix.lower()
+    if extension not in REALTIME_AUDIO_MIME_TYPES:
+        return DEFAULT_REALTIME_AUDIO_FILENAME, DEFAULT_REALTIME_AUDIO_MIME_TYPE
+    safe_mime_type = _safe_audio_mime_type(audio_mime_type, extension)
+    return safe_filename, safe_mime_type
+
+
+def _safe_audio_basename(audio_filename: str | None) -> str:
+    """Return a path-traversal-safe audio basename from client metadata."""
+    if not isinstance(audio_filename, str) or not audio_filename.strip():
+        return DEFAULT_REALTIME_AUDIO_FILENAME
+    basename = Path(audio_filename.strip().replace("\\", "/")).name
+    if basename in {"", ".", ".."}:
+        return DEFAULT_REALTIME_AUDIO_FILENAME
+    return basename
+
+
+def _safe_audio_mime_type(audio_mime_type: str | None, extension: str) -> str:
+    """Return recognized MIME metadata, defaulting by validated extension."""
+    expected_mime_type = REALTIME_AUDIO_MIME_TYPES[extension]
+    if not isinstance(audio_mime_type, str) or not audio_mime_type.strip():
+        return expected_mime_type
+    candidate = audio_mime_type.strip().lower()
+    if candidate == expected_mime_type:
+        return candidate
+    return expected_mime_type
 
 
 def decode_audio_chunk(message: dict[str, object]) -> bytes:

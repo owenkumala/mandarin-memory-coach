@@ -20,6 +20,12 @@ DEFAULT_USER_ID = "demo-user-realtime-manual"
 DEFAULT_SCENARIO = "restaurant ordering"
 DEFAULT_LEVEL = "HSK3 lower intermediate"
 DEFAULT_CHUNK_SIZE = 240_000
+AUDIO_MIME_TYPES = {
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".wav": "audio/wav",
+    ".webm": "audio/webm",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,13 +51,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_start_message(user_id: str, scenario: str, level: str) -> dict[str, str]:
+def build_start_message(
+    user_id: str,
+    scenario: str,
+    level: str,
+    audio_path: str = DEFAULT_AUDIO_PATH,
+) -> dict[str, str]:
     """Return the realtime start message sent before audio chunks."""
+    audio_filename = Path(audio_path.strip().replace("\\", "/")).name
+    audio_mime_type = AUDIO_MIME_TYPES.get(
+        Path(audio_filename).suffix.lower(),
+        "audio/webm",
+    )
     return {
         "type": "start",
         "user_id": user_id,
         "scenario": scenario,
         "level": level,
+        "audio_filename": audio_filename or "realtime.webm",
+        "audio_mime_type": audio_mime_type,
     }
 
 
@@ -153,7 +171,12 @@ async def run_diagnostic(args: argparse.Namespace) -> None:
     """Connect to the realtime WebSocket, send audio, and print events."""
     audio_bytes = read_audio_file(args.audio)
     audio_messages = build_audio_chunk_messages(audio_bytes, args.chunk_size)
-    start_message = build_start_message(args.user_id, args.scenario, args.level)
+    start_message = build_start_message(
+        args.user_id,
+        args.scenario,
+        args.level,
+        args.audio,
+    )
     started_at = time.perf_counter()
     print("Server-side ASR stage timings are printed in backend logs.", flush=True)
 

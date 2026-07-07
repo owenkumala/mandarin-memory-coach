@@ -96,6 +96,29 @@ def test_realtime_diagnostic_builds_base64_audio_chunks() -> None:
     ] == [b"ab", b"cd", b"ef"]
 
 
+def test_realtime_diagnostic_start_message_includes_audio_metadata() -> None:
+    """Start messages include safe audio filename and inferred MIME metadata."""
+    diagnostic = _load_diagnostic_module()
+
+    mp3_message = diagnostic.build_start_message(
+        "demo-user",
+        "restaurant ordering",
+        "HSK3 lower intermediate",
+        "../sample-mandarin.mp3",
+    )
+    m4a_message = diagnostic.build_start_message(
+        "demo-user",
+        "restaurant ordering",
+        "HSK3 lower intermediate",
+        "sample-mandarin.m4a",
+    )
+
+    assert mp3_message["audio_filename"] == "sample-mandarin.mp3"
+    assert mp3_message["audio_mime_type"] == "audio/mpeg"
+    assert m4a_message["audio_filename"] == "sample-mandarin.m4a"
+    assert m4a_message["audio_mime_type"] == "audio/mp4"
+
+
 def test_realtime_diagnostic_rejects_missing_audio_file(tmp_path) -> None:
     """Missing default or user-provided audio paths fail with a useful message."""
     diagnostic = _load_diagnostic_module()

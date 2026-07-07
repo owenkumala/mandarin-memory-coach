@@ -124,6 +124,8 @@ async def _handle_start(
         qwen_client=qwen_client,
         settings=settings,
         user_id=user_id,
+        audio_filename=_optional_string_field(message, "audio_filename"),
+        audio_mime_type=_optional_string_field(message, "audio_mime_type"),
     )
     state = _RealtimeSessionState(
         session_id=session_id,
@@ -577,6 +579,14 @@ def _string_field(message: dict[str, object], field_name: str, default: str) -> 
     if isinstance(value, str) and value.strip():
         return value.strip()
     return default
+
+
+def _optional_string_field(message: dict[str, object], field_name: str) -> str | None:
+    """Return a trimmed optional string field from a message."""
+    value = message.get(field_name)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _require_session(

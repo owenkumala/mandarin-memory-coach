@@ -13,6 +13,7 @@ from app.main import app
 from app.schemas import AnalysisResponse
 from app.services import realtime_voice_service
 from app.services.qwen_client import QwenClient
+from app.services.realtime_asr_service import sanitize_realtime_audio_metadata
 from app.services.sentence_tts_pipeline import (
     DEFAULT_REALTIME_TTS_MAX_CONCURRENCY,
     SentenceTtsPipeline,
@@ -168,8 +169,62 @@ def test_realtime_voice_chat_accepts_hsk3_and_emits_ordered_events(
         "HSK3 lower intermediate"
     )
     assert "realtime.asr_buffer_bytes=10 chunks=1" in caplog.text
+    assert "realtime.asr_audio_filename=realtime.webm" in caplog.text
+    assert "realtime.asr_audio_extension=.webm" in caplog.text
     assert "realtime.asr_save_audio_seconds=" in caplog.text
     assert "realtime.asr_transcribe_seconds=" in caplog.text
+
+
+def test_realtime_voice_chat_preserves_mp3_audio_metadata(monkeypatch) -> None:
+    """Realtime start metadata preserves MP3 extension for saved ASR audio."""
+    captured_audio_paths = []
+
+    async def fake_transcribe_audio(self: QwenClient, audio_path: str) -> str:
+        """Capture the saved ASR path without calling live Qwen."""
+        captured_audio_paths.append(audio_path)
+        assert Path(audio_path).exists()
+        return "我想点菜"
+
+    monkeypatch.setattr(QwenClient, "transcribe_audio", fake_transcribe_audio)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/voice-chat/realtime") as websocket:
+            websocket.send_json(
+                {
+                    "type": "start",
+                    "user_id": "demo-user-realtime-mp3",
+                    "audio_filename": "sample-mandarin.mp3",
+                    "audio_mime_type": "audio/mpeg",
+                }
+            )
+            websocket.send_json(
+                {
+                    "type": "audio_chunk",
+                    "audio_base64": base64.b64encode(b"fake mp3 bytes").decode("ascii"),
+                }
+            )
+            websocket.send_json({"type": "end_audio"})
+            events = _receive_realtime_events_until_done(websocket)
+
+    assert events[-1]["type"] == "done"
+    assert captured_audio_paths
+    assert Path(captured_audio_paths[0]).suffix == ".mp3"
+
+
+def test_realtime_audio_metadata_sanitizer_falls_back_safely() -> None:
+    """Unsupported or unsafe realtime filenames fall back to webm metadata."""
+    assert sanitize_realtime_audio_metadata(
+        "../../bad.exe",
+        "application/x-msdownload",
+    ) == ("realtime.webm", "audio/webm")
+    assert sanitize_realtime_audio_metadata(
+        "..\\sample.mp3",
+        "audio/webm",
+    ) == ("sample.mp3", "audio/mpeg")
+    assert sanitize_realtime_audio_metadata(None, None) == (
+        "realtime.webm",
+        "audio/webm",
+    )
 
 
 def test_realtime_voice_chat_defaults_missing_level_to_hsk1(monkeypatch) -> None:
