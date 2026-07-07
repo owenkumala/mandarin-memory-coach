@@ -151,10 +151,14 @@ async def _generate_tutor_audio_url(
         user_id,
         f"reply.{_tutor_audio_extension(settings.QWEN_TTS_OUTPUT_FORMAT)}",
     )
-    synthesized_path = await qwen_client.synthesize_speech(
-        tutor_reply,
-        str(tutor_audio_path),
-    )
+    try:
+        synthesized_path = await qwen_client.synthesize_speech(
+            tutor_reply,
+            str(tutor_audio_path),
+        )
+    except ValueError as exc:
+        logger.warning("voice_chat.tts_fallback reason=%s", exc)
+        return None
     if synthesized_path is None:
         return None
     return storage_url(synthesized_path, settings.STORAGE_DIR)

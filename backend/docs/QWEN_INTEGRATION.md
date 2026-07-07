@@ -147,6 +147,12 @@ Leave `QWEN_TTS_BASE_URL` empty for the official Qwen Cloud CosyVoice example
 unless you have a supported DashScope websocket base URL override. Do not set
 it to the OpenAI-compatible chat URL or the old HTTP TTS URL.
 
+If DashScope TTS fails with a local WebSocket/certificate error such as
+`SSL: CERTIFICATE_VERIFY_FAILED`, the `/voice-chat` endpoint keeps returning the
+text tutor reply and sets `tutor_audio_url=null`. This preserves the demo loop;
+the frontend should use browser TTS as the fallback while local certificate or
+DashScope websocket setup is fixed.
+
 ## What is real
 
 - `generate_tutor_turn()` calls Qwen once for both tutor reply and structured

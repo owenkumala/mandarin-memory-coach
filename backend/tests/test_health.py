@@ -202,6 +202,27 @@ def test_voice_chat_returns_tutor_audio_url_when_tts_succeeds(monkeypatch) -> No
     assert body["tutor_audio_url"].endswith(".mp3")
 
 
+def test_voice_chat_keeps_working_when_tts_fails(monkeypatch) -> None:
+    """POST /voice-chat falls back to text response when optional TTS fails."""
+    async def fake_synthesize_speech(
+        self: QwenClient,
+        text: str,
+        output_path: str,
+    ) -> str:
+        """Simulate a non-live DashScope TTS failure."""
+        raise ValueError("Qwen TTS request failed.")
+
+    monkeypatch.setattr(QwenClient, "synthesize_speech", fake_synthesize_speech)
+
+    with TestClient(app) as client:
+        body = _post_voice_chat(client, "demo-user-tts-fallback")
+
+    assert body["transcript"] == "我想吃中国菜"
+    assert body["tutor_reply"]
+    assert body["tutor_audio_url"] is None
+    assert body["memory_updated"] is True
+
+
 def test_repeated_mistake_score_stays_at_or_above_latest_severity() -> None:
     """Repeated mistakes keep the weakness score at least at latest severity."""
     user_id = "demo-user-scoring"
