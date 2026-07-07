@@ -36,6 +36,7 @@ from app.services.realtime_asr_service import (
 )
 from app.services.realtime_fast_ack_service import (
     build_fast_ack_audio_event,
+    cached_fast_ack_audio_event,
     fast_ack_sentence_event,
 )
 from app.services.sentence_tts_pipeline import SentenceTtsPipeline
@@ -392,6 +393,11 @@ async def _start_fast_ack(
         return None
     await _send_events(websocket, state, [fast_ack_sentence_event()])
     _log_elapsed("realtime.fast_ack_start_seconds", state.started_at)
+    cached_event = cached_fast_ack_audio_event(settings)
+    if cached_event is not None:
+        await _send_events(websocket, state, [cached_event])
+        _log_elapsed("realtime.fast_ack_audio_ready_seconds", state.started_at)
+        return None
     return asyncio.create_task(
         build_fast_ack_audio_event(qwen_client=qwen_client, settings=settings)
     )

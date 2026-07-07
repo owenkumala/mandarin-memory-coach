@@ -316,8 +316,10 @@ no emoji, no markdown, no bullet points, no quote-heavy examples, and concise
 HSK-appropriate wording. HSK1-HSK3 replies should stay under about 120 Chinese
 characters; HSK4-HSK6 replies should stay under about 180.
 
-After `asr_final`, realtime mode may emit a cached fast acknowledgement as
-sequence `0`:
+After `asr_final`, realtime mode emits the fast acknowledgement sentence as
+sequence `0`. If the shared fast-ack audio file is already cached, the matching
+`audio_chunk_ready` event is sent immediately before the Qwen tutor stream
+starts:
 
 ```json
 {"type": "tutor_sentence", "payload": {"sequence": 0, "text": "我来帮你改一句。", "source": "fast_ack"}}
@@ -325,14 +327,16 @@ sequence `0`:
 ```
 
 The frontend should play sequence `0` first if present. The model-generated
-tutor sentences still start at sequence `1`. If fake TTS is enabled or the fast
-acknowledgement TTS fails, sequence `0` is skipped and the normal sequence `1+`
-flow continues.
+tutor sentences still start at sequence `1`. If the cache is cold, the backend
+generates the fast-ack audio in the background, so sequence `0` audio may arrive
+after early tutor tokens. If fake TTS is enabled or the fast acknowledgement TTS
+fails, sequence `0` audio is skipped and the normal sequence `1+` flow
+continues.
 
 The perceived realtime flow is:
 
 ```text
-asr_final -> fast ack audio -> streamed correction text -> generated TTS chunks
+asr_final -> cached fast ack audio when present -> streamed correction text -> generated TTS chunks
 ```
 
 This improves perceived latency after buffered ASR finalizes, but true 1-2

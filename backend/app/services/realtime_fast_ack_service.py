@@ -23,10 +23,11 @@ async def build_fast_ack_audio_event(
     settings: Settings,
 ) -> RealtimeVoiceEvent | None:
     """Return cached/generated fast-ack audio event or skip safely."""
-    output_path = _fast_ack_path(settings)
-    if output_path.exists():
-        return _audio_event(str(output_path), settings)
+    cached_event = cached_fast_ack_audio_event(settings)
+    if cached_event is not None:
+        return cached_event
     try:
+        output_path = _fast_ack_path(settings)
         synthesized_path = await qwen_client.synthesize_speech(
             FAST_ACK_TEXT,
             str(output_path),
@@ -41,6 +42,14 @@ async def build_fast_ack_audio_event(
     if synthesized_path is None:
         return None
     return _audio_event(synthesized_path, settings)
+
+
+def cached_fast_ack_audio_event(settings: Settings) -> RealtimeVoiceEvent | None:
+    """Return the cached fast-ack audio event if the shared file already exists."""
+    output_path = _fast_ack_path(settings)
+    if not output_path.exists():
+        return None
+    return _audio_event(str(output_path), settings)
 
 
 def fast_ack_sentence_event() -> RealtimeVoiceEvent:
