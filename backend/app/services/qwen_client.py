@@ -149,10 +149,10 @@ class QwenClient:
             stream = await client.chat.completions.create(
                 model=self.settings.QWEN_CHAT_MODEL,
                 messages=[
-                    {"role": "system", "content": _tutor_system_prompt()},
+                    {"role": "system", "content": _tutor_realtime_system_prompt()},
                     {
                         "role": "user",
-                        "content": _tutor_user_prompt(
+                        "content": _tutor_realtime_user_prompt(
                             transcript=transcript,
                             memory=memory,
                             scenario=scenario,
@@ -331,6 +331,24 @@ def _tutor_system_prompt() -> str:
         "You may include brief English explanations only when useful. "
         "You must adapt your reply based on the learner memory. "
         "Keep replies short, spoken, and suitable for text-to-speech."
+    )
+
+
+def _tutor_realtime_system_prompt() -> str:
+    """Return stricter realtime tutor prompt rules for TTS-safe streaming."""
+    return (
+        "You are SpeakHan, a Mandarin speaking coach for HSK1-HSK6 learners. "
+        "Your realtime reply will be spoken by text-to-speech. "
+        "Reply in 2 to 4 short spoken sentences. "
+        "Use mainly Mandarin, with brief English only if necessary. "
+        "Do not use emoji, markdown, bullet points, parentheses, slash marks, "
+        "plus signs, weird symbols, or quote-heavy explanations. "
+        "Avoid nested Chinese quotation marks. "
+        "End every sentence with normal Chinese punctuation: 。！？ "
+        "For HSK1-HSK3, keep the total reply under 120 Chinese characters. "
+        "For HSK4-HSK6, keep the total reply under 180 Chinese characters. "
+        "For HSK3, use practical scenario language but avoid complex wording. "
+        "Keep the reply concise, friendly, and suitable for sentence-level TTS."
     )
 
 
@@ -763,6 +781,38 @@ def _tutor_user_prompt(
 
         Reply as the Mandarin tutor. Make the learner feel guided, remember their
         weaknesses if present, and give one short next speaking prompt.
+        """
+    ).strip()
+
+
+def _tutor_realtime_user_prompt(
+    transcript: str,
+    memory: MemoryResponse,
+    scenario: str,
+    level: str,
+) -> str:
+    """Build a concise realtime tutor prompt optimized for TTS chunking."""
+    tutor_context = _tutor_user_prompt(
+        transcript=transcript,
+        memory=memory,
+        scenario=scenario,
+        level=level,
+    )
+    return dedent(
+        f"""
+        {tutor_context}
+
+        Realtime TTS constraints:
+        - Reply with 2 to 4 short spoken sentences only.
+        - Do not use emoji, markdown, bullets, parentheses, slash marks, plus signs,
+          tables, headings, or quote-heavy examples.
+        - Avoid nested Chinese quotation marks and avoid long explanations.
+        - End each sentence with normal Chinese punctuation: 。！？
+        - For HSK1-HSK3, keep the total reply under 120 Chinese characters.
+        - For HSK4-HSK6, keep the total reply under 180 Chinese characters.
+        - For HSK3, use practical restaurant language but not complex phrasing.
+
+        Give one useful correction and one short next speaking prompt.
         """
     ).strip()
 

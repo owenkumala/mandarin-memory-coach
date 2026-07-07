@@ -304,8 +304,17 @@ structured feedback analysis. Tutor reply streaming starts first for perceived
 latency; structured feedback runs in parallel and can emit `feedback_ready`
 before slow final TTS chunks finish. Memory persistence waits for complete tutor
 text plus feedback, but does not wait for every audio chunk unless needed. The
-terminal `done` event still waits until tutor text, feedback/memory work, and
-all pending TTS chunk tasks have completed or emitted warning errors.
+frontend should show streamed text and play ready audio progressively; it should
+not wait for `done` before showing or speaking the tutor reply. The terminal
+`done` event still waits until tutor text, feedback/memory work, and all pending
+TTS chunk tasks have completed or emitted warning errors.
+
+Realtime tutor text is prompted more strictly than the REST tutor response
+because it is fed directly into sentence-level TTS. The realtime prompt asks for
+2-4 short spoken sentences, mainly Mandarin, normal Chinese sentence endings,
+no emoji, no markdown, no bullet points, no quote-heavy examples, and concise
+HSK-appropriate wording. HSK1-HSK3 replies should stay under about 120 Chinese
+characters; HSK4-HSK6 replies should stay under about 180.
 
 Sentence-level TTS runs as tutor tokens arrive. The backend finalizes sentences
 on `。！？!?` or newline, starts `synthesize_speech()` for each sentence, saves
@@ -323,7 +332,15 @@ Each successful TTS task emits:
 
 The frontend should play `audio_chunk_ready` URLs in ascending `sequence` order.
 If one sentence TTS task fails, the backend emits an `error` event with
-`severity=warning` and continues later chunks where possible.
+`severity=warning` and continues later chunks where possible. `audio_chunk_ready`
+events may arrive out of order because sentence-level TTS tasks finish at
+different speeds, so the frontend must buffer by `sequence` and play chunks in
+order.
+
+Qwen TTS reliability is improved by keeping realtime sentences short and by
+limiting concurrent sentence TTS requests to a small fixed cap. This preserves
+pipelining while avoiding a burst of many simultaneous CosyVoice websocket
+calls.
 
 The realtime backend logs these latency milestones with elapsed seconds from
 the accepted `start` message:
@@ -404,6 +421,8 @@ printing secrets or raw audio:
 In optimized realtime runs, `feedback_ready` and `memory_updated` may appear
 before a slow `audio_chunk_ready`. The frontend should treat event ordering as
 progressive rather than assuming feedback always follows all audio chunks.
+Likewise, the frontend should not wait for `done` before rendering tutor text or
+starting audio playback.
 
 POST a valid short `.m4a`, `.webm`, `.wav`, or `.mp3` file to
 `/api/v1/voice-chat` with `user_id=demo-user`, scenario `restaurant ordering`,

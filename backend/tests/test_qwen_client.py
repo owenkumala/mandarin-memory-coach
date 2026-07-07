@@ -22,6 +22,8 @@ from app.services.qwen_client import (
     _build_asr_audio_ref,
     _extract_asr_transcript,
     _safe_error_detail,
+    _tutor_realtime_system_prompt,
+    _tutor_realtime_user_prompt,
     _tts_base_url,
     build_asr_audio_ref,
     parse_dashscope_asr_response,
@@ -185,6 +187,24 @@ def test_generate_tutor_turn_fake_mode_returns_reply_and_analysis() -> None:
     assert "很好" in tutor_reply
     assert isinstance(analysis, AnalysisResponse)
     assert analysis.mistakes[0].weakness_category.value == "zh_ch_confusion"
+
+
+def test_realtime_tutor_prompt_is_tts_safe_and_level_aware() -> None:
+    """Realtime tutor prompts constrain output for short TTS-friendly chunks."""
+    system_prompt = _tutor_realtime_system_prompt()
+    user_prompt = _tutor_realtime_user_prompt(
+        transcript="我想点菜",
+        memory=_empty_memory(),
+        scenario="restaurant ordering",
+        level="HSK3 lower intermediate",
+    )
+
+    assert "2 to 4 short spoken sentences" in system_prompt
+    assert "Do not use emoji" in system_prompt
+    assert "Avoid nested Chinese quotation marks" in system_prompt
+    assert "under 120 Chinese characters" in system_prompt
+    assert "HSK3 lower intermediate" in user_prompt
+    assert "For HSK3, use practical restaurant language" in user_prompt
 
 
 def test_fake_asr_still_returns_fixed_transcript() -> None:

@@ -39,6 +39,7 @@ from app.services.memory_service import (  # noqa: E402
 )
 from app.services.qwen_client import QwenClient  # noqa: E402
 from app.services.sentence_tts_pipeline import (  # noqa: E402
+    DEFAULT_REALTIME_TTS_MAX_CONCURRENCY,
     SentenceTtsPipeline,
     split_complete_sentences,
 )
@@ -480,6 +481,41 @@ def test_sentence_tts_splitter_detects_chinese_and_english_punctuation() -> None
     assert remainder == " unfinished"
 
 
+def test_sentence_tts_splitter_keeps_chinese_quotes_together() -> None:
+    """Quoted punctuation stays inside one clean sentence chunk."""
+    text = "在餐厅点餐时，我们一般不说“你叫什么名字？”，而是说“我要点菜。”"
+
+    sentences, remainder = split_complete_sentences(text)
+
+    assert sentences == [text]
+    assert remainder == ""
+
+
+def test_sentence_tts_splitter_waits_for_streamed_closing_quote() -> None:
+    """A boundary waits when a closing quote may arrive in the next chunk."""
+    sentences, remainder = split_complete_sentences("你可以说“我要点菜。")
+
+    assert sentences == []
+    assert remainder == "你可以说“我要点菜。"
+
+    sentences, remainder = split_complete_sentences(f'{remainder}”')
+
+    assert sentences == ['你可以说“我要点菜。”']
+    assert remainder == ""
+
+
+def test_sentence_tts_flush_ignores_quote_only_fragments() -> None:
+    """Quote-only or emoji-only leftovers are not emitted as TTS sentences."""
+    pipeline = SentenceTtsPipeline(
+        qwen_client=QwenClient(settings=get_settings()),
+        settings=get_settings(),
+        user_id="demo-user-quote-fragment",
+    )
+    pipeline._buffer = "”😊"
+
+    assert pipeline.flush() == []
+
+
 def test_realtime_tts_chunk_paths_are_unique() -> None:
     """Sentence TTS chunk filenames are unique and sequence-prefixed."""
     pipeline = SentenceTtsPipeline(
@@ -495,6 +531,45 @@ def test_realtime_tts_chunk_paths_are_unique() -> None:
     assert first_path.parent.name == "demo-user-realtime-unique"
     assert first_path.name.startswith("chunk-1-")
     assert first_path.name.endswith(".mp3")
+
+
+def test_realtime_tts_pipeline_limits_concurrent_synthesis(monkeypatch) -> None:
+    """Sentence TTS keeps a small concurrency cap for provider reliability."""
+    active_calls = 0
+    max_active_calls = 0
+
+    async def fake_synthesize_speech(
+        self: QwenClient,
+        text: str,
+        output_path: str,
+    ) -> str:
+        """Track concurrent fake TTS calls without touching live Qwen."""
+        nonlocal active_calls, max_active_calls
+        active_calls += 1
+        max_active_calls = max(max_active_calls, active_calls)
+        await asyncio.sleep(0.01)
+        active_calls -= 1
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake realtime tutor audio")
+        return str(path)
+
+    async def run_pipeline() -> list[dict]:
+        """Start several TTS tasks and drain their generated events."""
+        pipeline = SentenceTtsPipeline(
+            qwen_client=QwenClient(settings=get_settings()),
+            settings=get_settings(),
+            user_id="demo-user-realtime-concurrency",
+        )
+        pipeline.accept_text_chunk("第一句。第二句。第三句。第四句。还有")
+        return [event.model_dump(mode="json") for event in await pipeline.drain_all()]
+
+    monkeypatch.setattr(QwenClient, "synthesize_speech", fake_synthesize_speech)
+
+    events = asyncio.run(run_pipeline())
+
+    assert max_active_calls == DEFAULT_REALTIME_TTS_MAX_CONCURRENCY
+    assert [event["payload"]["sequence"] for event in events] == [1, 2, 3, 4]
 
 
 def test_realtime_tts_failure_sends_warning_and_continues(monkeypatch) -> None:
