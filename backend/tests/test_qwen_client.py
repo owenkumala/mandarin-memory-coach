@@ -212,9 +212,16 @@ def test_realtime_tutor_prompt_is_tts_safe_and_level_aware() -> None:
     assert "friendly Mandarin tutor in a live call" in system_prompt
     assert "2 to 4 short spoken sentences" in system_prompt
     assert "6 to 10 seconds of speech" in system_prompt
+    assert "under 22 Chinese characters" in system_prompt
+    assert "Do not make one long sentence" in system_prompt
+    assert "Do not split tiny filler" in system_prompt
     assert "at most one main correction" in system_prompt
+    assert "Recast the learner into the natural speaker role" in system_prompt
+    assert "Do not preserve an off-scenario literal phrase" in system_prompt
+    assert "hotel check-in the learner is usually the guest" in system_prompt
     assert "natural follow-up question or repeat prompt" in system_prompt
     assert "Avoid always starting with 可以说" in system_prompt
+    assert "Do not use spoken placeholders like ……" in system_prompt
     assert "save detailed feedback, pinyin, and pronunciation notes" in system_prompt
     assert "For HSK1-HSK2, be English-friendly" in system_prompt
     assert "For HSK5-HSK6, use Mandarin-first" in system_prompt
@@ -224,9 +231,13 @@ def test_realtime_tutor_prompt_is_tts_safe_and_level_aware() -> None:
     assert "HSK3 lower intermediate" in user_prompt
     assert "hotel check-in" in user_prompt
     assert "2 to 4 short spoken sentences" in user_prompt
+    assert "selected scenario" in user_prompt
+    assert "replace it with a natural phrase for the scenario" in user_prompt
+    assert "guest checking in" in user_prompt
     assert "HSK3: mixed English/Chinese" in user_prompt
     assert "one conversational next turn" in user_prompt
     assert "Save detailed mistake explanations, pinyin" in user_prompt
+    assert "your name" in user_prompt
     assert "For HSK3, use practical restaurant language" not in user_prompt
     assert "我要一份宫保鸡丁" not in system_prompt
     assert "我要一份宫保鸡丁" not in user_prompt

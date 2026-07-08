@@ -328,6 +328,21 @@ target spoken time of about 6-10 seconds. The prompt explicitly avoids robotic
 patterns such as always starting with `可以说` or always asking
 `现在请你说一遍`.
 
+Realtime tutor replies should recast wrong or off-scenario learner speech into
+the natural speaker role for the selected scenario rather than preserving the
+learner's literal sentence. For example, hotel check-in should guide the learner
+as the guest saying `您好，我想办理入住。`; self introduction should prefer a line
+such as `你好，我叫 <name>。`; restaurant ordering should treat the learner as the
+customer and use a natural ordering opener such as `您好，我想点菜。`. These are
+examples of scenario intent, not hardcoded backend replies.
+
+Each spoken sentence should be short enough for TTS, ideally under about 22
+Chinese characters or one short English sentence. The prompt avoids one long
+sentence that combines correction, explanation, and example, and avoids tiny
+filler-only chunks such as `你好！` unless that is the whole reply. It also avoids
+spoken placeholders like `……`; if a name is needed but unknown, the tutor should
+use short English such as "your name" or ask a simple follow-up.
+
 Realtime spoken language adapts by HSK level: HSK1-HSK2 may be English-friendly
 with one clear Mandarin practice phrase, HSK3 may mix English and simple
 Mandarin, HSK4 is mostly Mandarin with short English only if useful, and HSK5/6
