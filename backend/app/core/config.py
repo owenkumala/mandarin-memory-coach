@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     QWEN_TTS_VOICE: str = ""
     QWEN_TTS_BASE_URL: str = ""
     QWEN_TTS_OUTPUT_FORMAT: str = "mp3"
+    REALTIME_TTS_MAX_CONCURRENCY: int = 1
     SSL_CERT_FILE: str = ""
     REQUESTS_CA_BUNDLE: str = ""
     QWEN_REQUEST_TIMEOUT_SECONDS: float = 30.0

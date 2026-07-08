@@ -17,6 +17,7 @@ from app.services.realtime_asr_service import sanitize_realtime_audio_metadata
 from app.services.sentence_tts_pipeline import (
     DEFAULT_REALTIME_TTS_MAX_CONCURRENCY,
     SentenceTtsPipeline,
+    realtime_tts_max_concurrency,
     split_complete_sentences,
 )
 from conftest import TEST_ROOT
@@ -580,10 +581,36 @@ def test_realtime_tts_chunk_paths_are_unique() -> None:
     assert first_path.name.endswith(".mp3")
 
 
+def test_realtime_tts_pipeline_defaults_to_single_live_concurrency() -> None:
+    """Default realtime TTS concurrency is one for live CosyVoice reliability."""
+    pipeline = SentenceTtsPipeline(
+        qwen_client=QwenClient(settings=get_settings()),
+        settings=get_settings(),
+        user_id="demo-user-realtime-default-concurrency",
+    )
+
+    assert DEFAULT_REALTIME_TTS_MAX_CONCURRENCY == 1
+    assert pipeline._max_concurrency == 1
+
+
+def test_realtime_tts_pipeline_clamps_zero_concurrency_to_one() -> None:
+    """Invalid low realtime TTS concurrency settings clamp to one."""
+    settings = Settings(REALTIME_TTS_MAX_CONCURRENCY=0)
+    pipeline = SentenceTtsPipeline(
+        qwen_client=QwenClient(settings=settings),
+        settings=settings,
+        user_id="demo-user-realtime-clamped-concurrency",
+    )
+
+    assert realtime_tts_max_concurrency(settings) == 1
+    assert pipeline._max_concurrency == 1
+
+
 def test_realtime_tts_pipeline_limits_concurrent_synthesis(monkeypatch) -> None:
-    """Sentence TTS keeps a small concurrency cap for provider reliability."""
+    """Custom realtime TTS concurrency allows bounded parallel synthesis."""
     active_calls = 0
     max_active_calls = 0
+    settings = Settings(REALTIME_TTS_MAX_CONCURRENCY=2)
 
     async def fake_synthesize_speech(
         self: QwenClient,
@@ -604,8 +631,8 @@ def test_realtime_tts_pipeline_limits_concurrent_synthesis(monkeypatch) -> None:
     async def run_pipeline() -> list[dict]:
         """Start several TTS tasks and drain their generated events."""
         pipeline = SentenceTtsPipeline(
-            qwen_client=QwenClient(settings=get_settings()),
-            settings=get_settings(),
+            qwen_client=QwenClient(settings=settings),
+            settings=settings,
             user_id="demo-user-realtime-concurrency",
         )
         pipeline.accept_text_chunk("第一句。第二句。第三句。第四句。还有")
@@ -615,7 +642,7 @@ def test_realtime_tts_pipeline_limits_concurrent_synthesis(monkeypatch) -> None:
 
     events = asyncio.run(run_pipeline())
 
-    assert max_active_calls == DEFAULT_REALTIME_TTS_MAX_CONCURRENCY
+    assert max_active_calls == 2
     assert [event["payload"]["sequence"] for event in events] == [1, 2, 3, 4]
 
 
@@ -677,5 +704,6 @@ def test_realtime_tts_failure_sends_warning_and_continues(monkeypatch) -> None:
         and event["payload"]["code"] == "tts_sentence_failed"
     ]
     assert warning_events
+    assert warning_events[0]["payload"]["sequence"] == 1
     assert _first_event(events, "audio_chunk_ready")["payload"]["sequence"] == 2
     assert events[-1]["type"] == "done"

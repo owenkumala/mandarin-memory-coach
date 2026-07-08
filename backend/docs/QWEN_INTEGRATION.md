@@ -67,6 +67,7 @@ QWEN_TTS_MODEL=cosyvoice-v3-plus
 QWEN_TTS_VOICE=longanyang
 QWEN_TTS_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference
 QWEN_TTS_OUTPUT_FORMAT=mp3
+REALTIME_TTS_MAX_CONCURRENCY=1
 QWEN_REQUEST_TIMEOUT_SECONDS=30
 QWEN_MAX_TURN_TOKENS=500
 QWEN_MAX_TUTOR_TOKENS=180
@@ -170,6 +171,7 @@ QWEN_TTS_MODEL=cosyvoice-v3-plus
 QWEN_TTS_VOICE=longanyang
 QWEN_TTS_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference
 QWEN_TTS_OUTPUT_FORMAT=mp3
+REALTIME_TTS_MAX_CONCURRENCY=1
 ```
 
 `DASHSCOPE_API_KEY` is used first for TTS, then `QWEN_API_KEY`. Do not commit
@@ -412,10 +414,31 @@ events may arrive out of order because sentence-level TTS tasks finish at
 different speeds, so the frontend must buffer by `sequence` and play chunks in
 order.
 
-Qwen TTS reliability is improved by keeping realtime sentences short and by
-limiting concurrent sentence TTS requests to a small fixed cap. This preserves
-pipelining while avoiding a burst of many simultaneous CosyVoice websocket
-calls.
+### Realtime TTS tuning
+
+Sentence-level realtime TTS is pipelined, but it is still not true streaming
+TTS. Each complete tutor sentence starts one `synthesize_speech()` call and
+emits an `audio_chunk_ready` event after the MP3/WAV file is saved.
+
+`REALTIME_TTS_MAX_CONCURRENCY` controls how many model-generated sentence TTS
+tasks may call Qwen CosyVoice at once. The default is `1`, which is safest for
+live Qwen TTS because CosyVoice uses WSS/WebSocket connections and multiple
+near-simultaneous connections can fail during demo runs. Higher values, clamped
+internally to a small cap, may reduce total completion time in fake/local tests
+or carefully tuned environments, but they can increase websocket connection
+failures.
+
+The frontend must still buffer `audio_chunk_ready` events by `sequence`. With
+`REALTIME_TTS_MAX_CONCURRENCY=1`, model-generated chunks should usually arrive
+in order, but the frontend should not assume that because future settings or
+provider behavior may change ordering. Fast acknowledgement audio is separate:
+sequence `0` comes from the shared fast-ack path, while model-generated TTS
+starts at sequence `1`.
+
+Realtime TTS queue logs include sequence number, sentence length, pending task
+count, chosen max concurrency, start, completion, and warning failures:
+`realtime.tts_queue_sentence`, `realtime.tts_start`, `realtime.tts_done`,
+`realtime.tts_failed`, and `realtime.tts_wait_pending`.
 
 The realtime backend logs these latency milestones with elapsed seconds from
 the accepted `start` message:

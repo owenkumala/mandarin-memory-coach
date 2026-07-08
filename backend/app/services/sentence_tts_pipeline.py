@@ -26,7 +26,8 @@ QUOTE_PAIRS = {
     "『": "』",
     '"': '"',
 }
-DEFAULT_REALTIME_TTS_MAX_CONCURRENCY = 2
+DEFAULT_REALTIME_TTS_MAX_CONCURRENCY = 1
+MAX_REALTIME_TTS_MAX_CONCURRENCY = 4
 
 
 @dataclass
@@ -41,11 +42,13 @@ class SentenceTtsPipeline:
     _tasks: list[asyncio.Task[RealtimeVoiceEvent | None]] = field(
         default_factory=list
     )
+    _max_concurrency: int = field(init=False)
     _semaphore: asyncio.Semaphore = field(init=False)
 
     def __post_init__(self) -> None:
         """Create the per-session TTS concurrency guard."""
-        self._semaphore = asyncio.Semaphore(DEFAULT_REALTIME_TTS_MAX_CONCURRENCY)
+        self._max_concurrency = realtime_tts_max_concurrency(self.settings)
+        self._semaphore = asyncio.Semaphore(self._max_concurrency)
 
     def accept_text_chunk(self, text: str) -> list[RealtimeVoiceEvent]:
         """Add streamed tutor text and start TTS tasks for complete sentences."""
@@ -53,21 +56,7 @@ class SentenceTtsPipeline:
         sentences, self._buffer = split_complete_sentences(self._buffer)
         events = []
         for sentence in sentences:
-            self._sequence += 1
-            events.append(
-                RealtimeVoiceEvent(
-                    type=RealtimeVoiceEventType.TUTOR_SENTENCE,
-                    payload={"sequence": self._sequence, "text": sentence},
-                )
-            )
-            self._tasks.append(
-                asyncio.create_task(
-                    self._generate_audio_event(
-                        sentence=sentence,
-                        sequence=self._sequence,
-                    )
-                )
-            )
+            events.append(self._queue_sentence(sentence))
         return events
 
     def flush(self) -> list[RealtimeVoiceEvent]:
@@ -76,18 +65,7 @@ class SentenceTtsPipeline:
         self._buffer = ""
         if not _is_speakable_sentence(sentence):
             return []
-        self._sequence += 1
-        self._tasks.append(
-            asyncio.create_task(
-                self._generate_audio_event(sentence=sentence, sequence=self._sequence)
-            )
-        )
-        return [
-            RealtimeVoiceEvent(
-                type=RealtimeVoiceEventType.TUTOR_SENTENCE,
-                payload={"sequence": self._sequence, "text": sentence},
-            )
-        ]
+        return [self._queue_sentence(sentence)]
 
     async def drain_ready(self) -> list[RealtimeVoiceEvent]:
         """Return completed TTS events without waiting for pending sentences."""
@@ -111,6 +89,7 @@ class SentenceTtsPipeline:
         """Wait for the next TTS task to finish and return completed events."""
         if not self._tasks:
             return []
+        logger.info("realtime.tts_wait_pending pending=%s", len(self._tasks))
         done_tasks, pending_tasks = await asyncio.wait(
             self._tasks,
             return_when=asyncio.FIRST_COMPLETED,
@@ -142,14 +121,18 @@ class SentenceTtsPipeline:
         output_path = self._build_chunk_path(sequence)
         try:
             async with self._semaphore:
+                logger.info(
+                    "realtime.tts_start sequence=%s sentence_length=%s",
+                    sequence,
+                    len(sentence),
+                )
                 synthesized_path = await self.qwen_client.synthesize_speech(
                     sentence,
                     str(output_path),
                 )
         except ValueError as exc:
             logger.warning(
-                "realtime.tts_sentence_failed sequence=%s sentence_length=%s "
-                "reason=%s",
+                "realtime.tts_failed sequence=%s sentence_length=%s reason=%s",
                 sequence,
                 len(sentence),
                 _safe_tts_error(str(exc)),
@@ -165,6 +148,7 @@ class SentenceTtsPipeline:
             )
         if synthesized_path is None:
             return None
+        logger.info("realtime.tts_done sequence=%s", sequence)
         return RealtimeVoiceEvent(
             type=RealtimeVoiceEventType.AUDIO_CHUNK_READY,
             payload={
@@ -172,6 +156,27 @@ class SentenceTtsPipeline:
                 "sentence": sentence,
                 "audio_url": storage_url(synthesized_path, self.settings.STORAGE_DIR),
             },
+        )
+
+    def _queue_sentence(self, sentence: str) -> RealtimeVoiceEvent:
+        """Queue one sentence for background TTS and return its text event."""
+        self._sequence += 1
+        self._tasks.append(
+            asyncio.create_task(
+                self._generate_audio_event(sentence=sentence, sequence=self._sequence)
+            )
+        )
+        logger.info(
+            "realtime.tts_queue_sentence sequence=%s sentence_length=%s "
+            "pending=%s max_concurrency=%s",
+            self._sequence,
+            len(sentence),
+            len(self._tasks),
+            self._max_concurrency,
+        )
+        return RealtimeVoiceEvent(
+            type=RealtimeVoiceEventType.TUTOR_SENTENCE,
+            payload={"sequence": self._sequence, "text": sentence},
         )
 
     def _build_chunk_path(self, sequence: int) -> Path:
@@ -190,6 +195,16 @@ class SentenceTtsPipeline:
             / safe_user_id
             / f"chunk-{sequence}-{uuid4().hex}.{extension}"
         )
+
+
+def realtime_tts_max_concurrency(settings: Settings) -> int:
+    """Return clamped realtime sentence-TTS concurrency for this process."""
+    configured = getattr(
+        settings,
+        "REALTIME_TTS_MAX_CONCURRENCY",
+        DEFAULT_REALTIME_TTS_MAX_CONCURRENCY,
+    )
+    return max(1, min(MAX_REALTIME_TTS_MAX_CONCURRENCY, int(configured)))
 
 
 def split_complete_sentences(text: str) -> tuple[list[str], str]:
