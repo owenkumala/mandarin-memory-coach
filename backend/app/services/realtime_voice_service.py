@@ -27,7 +27,7 @@ from app.services.memory_service import (
     save_session,
     update_active_weaknesses,
 )
-from app.services.qwen_client import QwenClient
+from app.services.qwen_client import QwenClient, build_fallback_analysis
 from app.services.realtime_asr_service import (
     RealtimeAsrResult,
     RealtimeAsrSession,
@@ -43,6 +43,11 @@ from app.services.sentence_tts_pipeline import SentenceTtsPipeline
 
 logger = logging.getLogger(__name__)
 DEFAULT_REALTIME_LEVEL = "HSK1 beginner"
+ANALYSIS_FAILED_MESSAGE = "Structured feedback could not be generated for this turn."
+RECOVERABLE_ANALYSIS_ERROR_MESSAGES = (
+    "Qwen analysis response was not valid JSON.",
+    "Qwen analysis response did not match the expected schema or enums.",
+)
 
 
 async def run_realtime_voice_websocket(websocket: WebSocket, db: Session) -> None:
@@ -255,7 +260,12 @@ async def _run_tutor_feedback_memory_pipeline(
             already_done=fast_ack_done,
         )
         if analysis is None and analysis_task.done():
-            analysis = await analysis_task
+            analysis = await _resolve_analysis_task(
+                websocket=websocket,
+                state=state,
+                asr_result=asr_result,
+                analysis_task=analysis_task,
+            )
             feedback_sent = await _emit_feedback_ready(
                 websocket=websocket,
                 state=state,
@@ -267,7 +277,12 @@ async def _run_tutor_feedback_memory_pipeline(
 
     tutor_reply = "".join(tutor_reply_parts).strip()
     if analysis is None and analysis_task.done():
-        analysis = await analysis_task
+        analysis = await _resolve_analysis_task(
+            websocket=websocket,
+            state=state,
+            asr_result=asr_result,
+            analysis_task=analysis_task,
+        )
         feedback_sent = await _emit_feedback_ready(
             websocket=websocket,
             state=state,
@@ -366,7 +381,12 @@ async def _finish_analysis_tts_and_memory(
                     _log_elapsed("realtime.fast_ack_skipped_seconds", state.started_at)
                 continue
 
-            analysis = task.result()
+            analysis = await _resolve_analysis_task(
+                websocket=websocket,
+                state=state,
+                asr_result=asr_result,
+                analysis_task=analysis_task,
+            )
             if isinstance(analysis, AnalysisResponse):
                 feedback_sent = await _emit_feedback_ready(
                     websocket=websocket,
@@ -384,6 +404,42 @@ async def _finish_analysis_tts_and_memory(
                     already_sent=memory_sent,
                 )
     return analysis, feedback_sent, memory_sent
+
+
+async def _resolve_analysis_task(
+    websocket: WebSocket,
+    state: "_RealtimeSessionState",
+    asr_result: RealtimeAsrResult,
+    analysis_task: asyncio.Task[AnalysisResponse],
+) -> AnalysisResponse:
+    """Return analysis or a safe fallback for recoverable model JSON failures."""
+    try:
+        return await analysis_task
+    except Exception as exc:
+        if not _is_recoverable_analysis_error(exc):
+            raise
+        logger.warning(
+            "realtime.analysis_failed code=analysis_failed reason=%s",
+            str(exc),
+        )
+        await _send_warning(websocket, "analysis_failed", ANALYSIS_FAILED_MESSAGE)
+        return build_fallback_analysis(
+            transcript=asr_result.transcript,
+            scenario=state.scenario,
+            level=state.level,
+            reason=str(exc),
+        )
+
+
+def _is_recoverable_analysis_error(exc: Exception) -> bool:
+    """Return true only for malformed model analysis output failures."""
+    if not isinstance(exc, ValueError):
+        return False
+    message = str(exc)
+    return any(
+        recoverable_message in message
+        for recoverable_message in RECOVERABLE_ANALYSIS_ERROR_MESSAGES
+    )
 
 
 async def _start_fast_ack(
@@ -559,6 +615,17 @@ async def _send_error(websocket: WebSocket, code: str, message: str) -> None:
         RealtimeVoiceEvent(
             type=RealtimeVoiceEventType.ERROR,
             payload={"severity": "error", "code": code, "message": message},
+        ),
+    )
+
+
+async def _send_warning(websocket: WebSocket, code: str, message: str) -> None:
+    """Send a recoverable warning event to the frontend."""
+    await _send_event(
+        websocket,
+        RealtimeVoiceEvent(
+            type=RealtimeVoiceEventType.ERROR,
+            payload={"severity": "warning", "code": code, "message": message},
         ),
     )
 

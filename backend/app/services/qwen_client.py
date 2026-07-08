@@ -1079,6 +1079,23 @@ def _fake_analysis(transcript: str, scenario: str, level: str) -> AnalysisRespon
     )
 
 
+def build_fallback_analysis(
+    transcript: str,
+    scenario: str,
+    level: str,
+    reason: str,
+) -> AnalysisResponse:
+    """Return safe structured feedback when realtime analysis JSON is unusable."""
+    return AnalysisResponse(
+        mistakes=[],
+        fluency_score=60,
+        confidence_score=50,
+        summary="Structured feedback could not be generated reliably for this turn.",
+        next_focus="Repeat the corrected phrase.",
+        next_drill="Say the corrected sentence slowly once, then at normal speed.",
+    )
+
+
 def _extract_chat_content(response: object) -> str:
     """Extract text content from an OpenAI-compatible chat completion response."""
     try:

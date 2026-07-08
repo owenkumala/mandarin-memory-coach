@@ -520,6 +520,86 @@ def test_realtime_feedback_ready_can_emit_before_slow_audio_chunk(monkeypatch) -
     assert event_types[-1] == "done"
 
 
+def test_realtime_analysis_json_failure_uses_warning_fallback(monkeypatch) -> None:
+    """Malformed structured analysis JSON does not fail the realtime session."""
+    settings = _realtime_test_settings(use_fake_tts=False, suffix="analysis_fallback")
+
+    async def fake_stream_tutor_reply(
+        self: QwenClient,
+        transcript: str,
+        memory: object,
+        scenario: str,
+        level: str,
+    ):
+        """Yield a normal spoken tutor sentence while analysis fails."""
+        yield "点餐时说：您好，我想点菜。"
+
+    async def fake_analyze_mistakes(
+        self: QwenClient,
+        transcript: str,
+        scenario: str,
+        level: str,
+    ) -> AnalysisResponse:
+        """Simulate the strict parser rejecting malformed Qwen JSON."""
+        raise ValueError("Qwen analysis response was not valid JSON.")
+
+    async def fake_synthesize_speech(
+        self: QwenClient,
+        text: str,
+        output_path: str,
+    ) -> str:
+        """Write fake audio so the session still produces playable chunks."""
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake realtime tutor audio")
+        return str(path)
+
+    monkeypatch.setattr(realtime_voice_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(QwenClient, "transcribe_audio", _fake_realtime_transcribe_audio)
+    monkeypatch.setattr(QwenClient, "stream_tutor_reply", fake_stream_tutor_reply)
+    monkeypatch.setattr(QwenClient, "analyze_mistakes", fake_analyze_mistakes)
+    monkeypatch.setattr(QwenClient, "synthesize_speech", fake_synthesize_speech)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/voice-chat/realtime") as websocket:
+            _send_fake_audio_turn(websocket, "demo-user-analysis-fallback")
+            events = _receive_realtime_events_until_done(websocket)
+
+    warning_events = [
+        event
+        for event in events
+        if event["type"] == "error"
+        and event["payload"]["code"] == "analysis_failed"
+    ]
+    assert warning_events == [
+        {
+            "type": "error",
+            "payload": {
+                "severity": "warning",
+                "code": "analysis_failed",
+                "message": "Structured feedback could not be generated for this turn.",
+            },
+        }
+    ]
+    assert not any(
+        event["type"] == "error"
+        and event["payload"]["code"] == "realtime_pipeline_failed"
+        for event in events
+    )
+    event_types = [event["type"] for event in events]
+    assert "tutor_token" in event_types
+    assert "audio_chunk_ready" in event_types
+    assert "feedback_ready" in event_types
+    assert "memory_updated" in event_types
+    assert event_types[-1] == "done"
+    feedback = _first_event(events, "feedback_ready")["payload"]["feedback"]
+    assert feedback["mistakes"] == []
+    assert feedback["summary"] == (
+        "Structured feedback could not be generated reliably for this turn."
+    )
+    assert feedback["next_focus"] == "Repeat the corrected phrase."
+
+
 def test_sentence_tts_splitter_detects_chinese_and_english_punctuation() -> None:
     """Sentence splitting detects Chinese punctuation and common English endings."""
     text = "你好！我想点菜。Can I order? unfinished"

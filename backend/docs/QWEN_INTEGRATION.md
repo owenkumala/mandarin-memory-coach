@@ -71,7 +71,7 @@ REALTIME_TTS_MAX_CONCURRENCY=1
 QWEN_REQUEST_TIMEOUT_SECONDS=30
 QWEN_MAX_TURN_TOKENS=500
 QWEN_MAX_TUTOR_TOKENS=180
-QWEN_MAX_ANALYSIS_TOKENS=650
+QWEN_MAX_ANALYSIS_TOKENS=1200
 QWEN_MAX_RETRIES=0
 MAX_AUDIO_UPLOAD_BYTES=5000000
 ```
@@ -318,6 +318,20 @@ frontend should show streamed text and play ready audio progressively; it should
 not wait for `done` before showing or speaking the tutor reply. The terminal
 `done` event still waits until tutor text, feedback/memory work, and all pending
 TTS chunk tasks have completed or emitted warning errors.
+
+Realtime treats malformed or schema-invalid structured analysis JSON as a
+recoverable model-output problem, not a terminal voice-session failure. If the
+analysis parser rejects the Qwen response, the backend emits:
+
+```json
+{"type": "error", "payload": {"severity": "warning", "code": "analysis_failed", "message": "Structured feedback could not be generated for this turn."}}
+```
+
+It then uses a safe fallback `AnalysisResponse` so `feedback_ready`,
+`memory_updated`, and `done` can still emit. Missing credentials, provider
+request failures, and other configuration/runtime errors remain terminal errors.
+`QWEN_MAX_ANALYSIS_TOKENS` defaults to `1200` to reduce truncation risk as
+frontend-friendly correction-card fields grow.
 
 Realtime tutor text is prompted more strictly than the REST tutor response
 because it is fed directly into sentence-level TTS. The realtime prompt asks for
