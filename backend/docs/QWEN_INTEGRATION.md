@@ -63,6 +63,12 @@ S3_PREFIX=speechan/audio/
 S3_SIGNED_URL_EXPIRES_SECONDS=900
 QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
 QWEN_ASR_MAX_RETRIES=0
+REALTIME_ASR_MODE=buffered_fallback
+REALTIME_ASR_MODEL=qwen3-asr-flash-realtime
+REALTIME_ASR_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime
+REALTIME_ASR_SAMPLE_RATE=16000
+REALTIME_ASR_AUDIO_FORMAT=pcm
+REALTIME_ASR_SESSION_FINISH_TIMEOUT_SECONDS=20
 QWEN_TTS_MODEL=cosyvoice-v3-plus
 QWEN_TTS_VOICE=longanyang
 QWEN_TTS_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference
@@ -140,30 +146,48 @@ only. Signed URLs must not be printed with query parameters because those query
 strings can contain signature data.
 
 `qwen3-asr-flash-realtime` is intended for WebSocket streaming ASR, but this
-branch does not invent an unsupported protocol. Local SDK inspection found:
+branch should only use official SDK surfaces. Local SDK inspection found:
 
 - `dashscope.audio.asr.Recognition`, which exposes an official websocket-style
-  recognition interface with `start()`, `send_audio_frame()`, and `stop()`.
+  recognition interface with `start()`, `send_audio_frame()`, and `stop()` for
+  generic DashScope realtime ASR models.
 - `dashscope.audio.qwen_asr.QwenTranscription`, which is a Qwen batch
   transcription API.
-- no clear local SDK class or sample that maps `qwen3-asr-flash` or
-  `qwen3-asr-flash-realtime` to a supported realtime Qwen ASR session.
+- `dashscope.audio.qwen_omni.omni_realtime.OmniRealtimeConversation`, whose
+  `TranscriptionParams` docs explicitly say they are effective with
+  `qwen3-asr-flash-realtime` or later models. This is the official SDK surface
+  used for opt-in `asr_mode=qwen_streaming_realtime`.
 
-The realtime WebSocket endpoint therefore uses a `RealtimeAsrSession`
+The default realtime WebSocket endpoint still uses a `RealtimeAsrSession`
 abstraction with a buffered fallback implementation. The frontend sends base64
-audio chunks over the WebSocket, but those chunks are only buffered locally
-during the speaking turn. ASR begins after `end_audio`: the backend writes the
-full audio file, uploads or exposes it according to `QWEN_ASR_AUDIO_REF_MODE`,
-then reuses the stable `transcribe_audio()` path. This mode is reported as
-`asr_mode=buffered_fallback`.
+audio chunks over the WebSocket, but in default mode those chunks are only
+buffered locally during the speaking turn. ASR begins after `end_audio`: the
+backend writes the full audio file, uploads or exposes it according to
+`QWEN_ASR_AUDIO_REF_MODE`, then reuses the stable `transcribe_audio()` path.
+This mode is reported as `asr_mode=buffered_fallback`.
 
-A future true streaming ASR implementation should fit behind the same
-`RealtimeAsrSession` interface: `start()` would open the official provider
-stream, `accept_audio_chunk()` would forward each incoming chunk immediately,
-and the session would emit `asr_partial` events before a final `asr_final`.
-The code includes a documented placeholder for that provider-specific Qwen
-session, but it intentionally does not invent or call an unsupported realtime
-Qwen protocol.
+An opt-in Qwen streaming mode is available with:
+
+```text
+REALTIME_ASR_MODE=qwen_streaming_realtime
+REALTIME_ASR_MODEL=qwen3-asr-flash-realtime
+REALTIME_ASR_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime
+REALTIME_ASR_SAMPLE_RATE=16000
+REALTIME_ASR_AUDIO_FORMAT=pcm
+```
+
+In this mode, `start()` opens the official DashScope Qwen Omni realtime
+connection, `accept_audio_chunk()` forwards each incoming PCM chunk immediately,
+and callback transcription messages are converted to `asr_partial` events. On
+`end_audio`, the provider stream is committed/finalized and the backend emits
+the normal `asr_final` event. The session also keeps a local audio buffer so it
+can fall back to `BufferedRealtimeAsrSession` if the provider stream fails or
+returns no transcript.
+
+Important audio-format constraint: Qwen streaming mode expects raw PCM, 16 kHz,
+mono, 16-bit audio chunks. Browser WebM/Opus, MP3, and M4A chunks are not sent
+to the streaming provider. If realtime start metadata is missing or indicates
+WebM/MP3/M4A, the backend keeps using `buffered_fallback`.
 
 TTS is optional and configured separately with `USE_FAKE_TTS`. When
 `USE_FAKE_TTS=true`, the backend keeps returning `tutor_audio_url=null` and the
@@ -415,18 +439,24 @@ The perceived realtime flow is:
 asr_final -> cached fast ack audio when present -> streamed correction text -> generated TTS chunks
 ```
 
-This improves perceived latency after buffered ASR finalizes, but true 1-2
-second ChatGPT-like response still requires a later real streaming ASR
-implementation.
+This improves perceived latency after ASR finalizes. To start ASR while the
+learner is still speaking, enable `REALTIME_ASR_MODE=qwen_streaming_realtime`
+and send raw PCM chunks; full-duplex interruption and barge-in are still not
+implemented.
 
 ### ASR latency diagnostics
 
-Realtime ASR currently uses the buffered fallback: the WebSocket collects audio
+Realtime ASR defaults to the buffered fallback: the WebSocket collects audio
 chunks, writes one local audio file on `end_audio`, then reuses the stable Qwen
 ASR path. Cached fast acknowledgement audio can start playback immediately after
 `asr_final`, but it cannot reduce slow or variable ASR time before `asr_final`.
-True 1-2 second ChatGPT-like latency still requires a later supported streaming
-ASR implementation that forwards chunks to Qwen before `end_audio`.
+
+When `REALTIME_ASR_MODE=qwen_streaming_realtime` and the client sends raw PCM
+chunks, ASR starts before `end_audio`. Incoming chunks are forwarded immediately
+to the DashScope Qwen Omni realtime provider, partial transcription callbacks
+emit `asr_partial`, and `end_audio` finalizes the provider stream before the
+backend emits `asr_final`. The tutor/feedback/TTS pipeline still starts after
+`asr_final`; full-duplex interruption is not implemented yet.
 
 When `asr_final` is slow, inspect backend logs for these stage timings:
 
@@ -451,6 +481,10 @@ qwen.asr_total_seconds=... audio_ref_mode=...
 realtime.asr_transcribe_seconds=...
 realtime.asr_finish_done_seconds=...
 realtime.asr_final_seconds=...
+realtime.asr_streaming_start model=... sample_rate=... format=...
+realtime.asr_streaming_start_failed reason=...
+realtime.asr_streaming_append_failed reason=...
+realtime.asr_streaming_finish_failed reason=...
 ```
 
 The logs intentionally include audio size, object key, model, and audio
@@ -458,6 +492,17 @@ reference mode, but never API keys, authorization headers, raw audio bytes, or
 full signed URLs. Compare the realtime timestamps against `qwen.asr_total_seconds`
 and the storage upload/signing logs to separate local buffering, upload, URL
 preparation, DashScope request time, and response parsing.
+
+To manually test streaming ASR without the frontend, use a raw PCM file:
+
+```bash
+cd backend
+python3 scripts/check_realtime_streaming_asr.py sample-mandarin.pcm
+```
+
+The script requires `REALTIME_ASR_MODE=qwen_streaming_realtime`, a configured
+ASR API key, and PCM audio. It prints partial/final transcript events with
+timestamps and never prints credentials.
 
 Sentence-level TTS runs as tutor tokens arrive. The backend finalizes sentences
 on `。！？!?` or newline, starts `synthesize_speech()` for each sentence, saves

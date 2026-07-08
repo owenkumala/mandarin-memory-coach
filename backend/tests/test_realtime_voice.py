@@ -11,9 +11,14 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings, get_settings
 from app.main import app
 from app.schemas import AnalysisResponse
-from app.services import realtime_voice_service
+from app.services import realtime_asr_service, realtime_voice_service
 from app.services.qwen_client import QwenClient
-from app.services.realtime_asr_service import sanitize_realtime_audio_metadata
+from app.services.realtime_asr_service import (
+    BufferedRealtimeAsrSession,
+    QwenStreamingRealtimeAsrSession,
+    build_realtime_asr_session,
+    sanitize_realtime_audio_metadata,
+)
 from app.services.sentence_tts_pipeline import (
     DEFAULT_REALTIME_TTS_MAX_CONCURRENCY,
     SentenceTtsPipeline,
@@ -76,6 +81,38 @@ def _write_cached_fast_ack(settings: Settings) -> None:
     cached_path = Path(settings.TUTOR_AUDIO_DIR) / "_shared" / "realtime-fast-ack.mp3"
     cached_path.parent.mkdir(parents=True, exist_ok=True)
     cached_path.write_bytes(b"cached fast ack audio")
+
+
+class _FakeQwenStreamingAsrProvider:
+    """Mock Qwen realtime ASR provider for non-live tests."""
+
+    def __init__(self) -> None:
+        """Track callback and forwarded audio chunks."""
+        self.callback = None
+        self.audio_chunks: list[bytes] = []
+
+    def start(self, callback: object) -> None:
+        """Capture the callback as if the provider stream opened."""
+        self.callback = callback
+
+    def append_audio(self, audio_bytes: bytes) -> None:
+        """Capture audio and emit one provider partial."""
+        self.audio_chunks.append(audio_bytes)
+        self.callback.on_event(
+            {
+                "type": "conversation.item.input_audio_transcription.delta",
+                "delta": "我想",
+            }
+        )
+
+    def finish(self) -> None:
+        """Emit a final provider transcript."""
+        self.callback.on_event(
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "transcript": "我想点菜",
+            }
+        )
 
 
 def test_realtime_voice_chat_accepts_hsk3_and_emits_ordered_events(
@@ -223,6 +260,80 @@ def test_realtime_voice_chat_preserves_mp3_audio_metadata(monkeypatch) -> None:
     assert Path(captured_audio_paths[0]).suffix == ".mp3"
 
 
+def test_realtime_asr_session_defaults_to_buffered_fallback() -> None:
+    """Realtime ASR defaults to the safe buffered fallback."""
+    settings = _realtime_test_settings(use_fake_tts=True, suffix="asr_default")
+
+    session = build_realtime_asr_session(
+        qwen_client=QwenClient(settings=settings),
+        settings=settings,
+        user_id="demo-user-asr-default",
+    )
+
+    assert isinstance(session, BufferedRealtimeAsrSession)
+    assert session.mode == "buffered_fallback"
+
+
+def test_realtime_asr_streaming_mode_requires_pcm_metadata() -> None:
+    """Qwen streaming ASR is opt-in and only selected for PCM chunks."""
+    settings = Settings(
+        USE_FAKE_QWEN=True,
+        USE_FAKE_TTS=True,
+        REALTIME_ASR_MODE="qwen_streaming_realtime",
+        DATABASE_URL=os.environ["DATABASE_URL"],
+        STORAGE_DIR=os.environ["STORAGE_DIR"],
+        USER_AUDIO_DIR=os.environ["USER_AUDIO_DIR"],
+        TUTOR_AUDIO_DIR=str(TEST_ROOT / "storage" / "tutor_audio_asr_streaming"),
+    )
+
+    streaming_session = build_realtime_asr_session(
+        qwen_client=QwenClient(settings=settings),
+        settings=settings,
+        user_id="demo-user-asr-streaming",
+        audio_filename="realtime.pcm",
+        audio_mime_type="audio/pcm",
+    )
+    fallback_session = build_realtime_asr_session(
+        qwen_client=QwenClient(settings=settings),
+        settings=settings,
+        user_id="demo-user-asr-streaming-webm",
+        audio_filename="realtime.webm",
+        audio_mime_type="audio/webm",
+    )
+
+    assert isinstance(streaming_session, QwenStreamingRealtimeAsrSession)
+    assert streaming_session.mode == "qwen_streaming_realtime"
+    assert isinstance(fallback_session, BufferedRealtimeAsrSession)
+    assert fallback_session.mode == "buffered_fallback"
+
+
+def test_qwen_streaming_asr_session_emits_partial_before_finish() -> None:
+    """Mocked Qwen streaming ASR forwards chunks and emits provider partials."""
+    settings = _realtime_test_settings(use_fake_tts=True, suffix="asr_stream_unit")
+    provider = _FakeQwenStreamingAsrProvider()
+    session = QwenStreamingRealtimeAsrSession(
+        qwen_client=QwenClient(settings=settings),
+        settings=settings,
+        user_id="demo-user-asr-stream-unit",
+        audio_filename="realtime.pcm",
+        audio_mime_type="audio/pcm",
+        provider=provider,
+    )
+
+    async def run_session():
+        await session.start()
+        events = await session.accept_audio_chunk(b"pcm audio")
+        result = await session.finish()
+        return events, result
+
+    events, result = asyncio.run(run_session())
+
+    assert provider.audio_chunks == [b"pcm audio"]
+    assert any(event.type.value == "asr_partial" for event in events)
+    assert result.transcript == "我想点菜"
+    assert Path(result.audio_path).suffix == ".pcm"
+
+
 def test_realtime_audio_metadata_sanitizer_falls_back_safely() -> None:
     """Unsupported or unsafe realtime filenames fall back to webm metadata."""
     assert sanitize_realtime_audio_metadata(
@@ -256,6 +367,66 @@ def test_realtime_voice_chat_defaults_missing_level_to_hsk1(monkeypatch) -> None
 
     assert event["type"] == "session_started"
     assert event["payload"]["level"] == "HSK1 beginner"
+
+
+def test_realtime_websocket_passes_streaming_asr_partial(monkeypatch) -> None:
+    """Opt-in Qwen streaming ASR can emit asr_partial before end_audio."""
+    settings = Settings(
+        USE_FAKE_QWEN=True,
+        USE_FAKE_TTS=True,
+        REALTIME_ASR_MODE="qwen_streaming_realtime",
+        DATABASE_URL=os.environ["DATABASE_URL"],
+        STORAGE_DIR=os.environ["STORAGE_DIR"],
+        USER_AUDIO_DIR=os.environ["USER_AUDIO_DIR"],
+        TUTOR_AUDIO_DIR=str(TEST_ROOT / "storage" / "tutor_audio_asr_ws_stream"),
+    )
+    provider = _FakeQwenStreamingAsrProvider()
+
+    monkeypatch.setattr(realtime_voice_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        realtime_asr_service,
+        "QwenRealtimeAsrProvider",
+        lambda settings: provider,
+    )
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/voice-chat/realtime") as websocket:
+            websocket.send_json(
+                {
+                    "type": "start",
+                    "user_id": "demo-user-asr-ws-stream",
+                    "audio_filename": "realtime.pcm",
+                    "audio_mime_type": "audio/pcm",
+                }
+            )
+            session_event = websocket.receive_json()
+            websocket.send_json(
+                {
+                    "type": "audio_chunk",
+                    "audio_base64": base64.b64encode(b"pcm audio").decode("ascii"),
+                }
+            )
+            audio_event = websocket.receive_json()
+            partial_event = websocket.receive_json()
+            websocket.send_json({"type": "end_audio"})
+            remaining_events = _receive_realtime_events_until_done(websocket)
+
+    all_events = [session_event, audio_event, partial_event, *remaining_events]
+    event_types = [event["type"] for event in all_events]
+    assert session_event["payload"]["asr_mode"] == "qwen_streaming_realtime"
+    assert audio_event["type"] == "audio_received"
+    assert partial_event == {
+        "type": "asr_partial",
+        "payload": {
+            "text": "我想",
+            "provider_event_type": "conversation.item.input_audio_transcription.delta",
+        },
+    }
+    assert event_types.index("asr_partial") < event_types.index("asr_final")
+    assert _first_event(all_events, "asr_final")["payload"]["transcript"] == "我想点菜"
+    assert all_events[-1]["payload"]["timings"]["asr_mode"] == (
+        "qwen_streaming_realtime"
+    )
 
 
 def test_realtime_cached_fast_ack_audio_emits_before_tutor_token(monkeypatch) -> None:

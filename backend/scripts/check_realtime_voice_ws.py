@@ -25,6 +25,8 @@ AUDIO_MIME_TYPES = {
     ".m4a": "audio/mp4",
     ".wav": "audio/wav",
     ".webm": "audio/webm",
+    ".pcm": "audio/pcm",
+    ".raw": "audio/pcm",
 }
 
 

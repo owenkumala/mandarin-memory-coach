@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     QWEN_ASR_AUDIO_REF_MODE: str = "oss_url"
     QWEN_ASR_REQUEST_TIMEOUT_SECONDS: float = 30.0
     QWEN_ASR_MAX_RETRIES: int = 0
+    REALTIME_ASR_MODE: str = "buffered_fallback"
+    REALTIME_ASR_MODEL: str = "qwen3-asr-flash-realtime"
+    REALTIME_ASR_BASE_URL: str = ""
+    REALTIME_ASR_SAMPLE_RATE: int = 16_000
+    REALTIME_ASR_AUDIO_FORMAT: str = "pcm"
+    REALTIME_ASR_SESSION_FINISH_TIMEOUT_SECONDS: int = 20
     QWEN_TTS_MODEL: str = ""
     QWEN_TTS_VOICE: str = ""
     QWEN_TTS_BASE_URL: str = ""

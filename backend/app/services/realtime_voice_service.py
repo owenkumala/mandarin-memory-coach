@@ -158,6 +158,7 @@ async def _handle_start(
     )
     _log_elapsed("realtime.session_started", state.started_at)
     for event in await asr_session.start():
+        state.asr_mode = asr_session.mode
         await _send_event(websocket, event)
     return state
 
@@ -186,6 +187,7 @@ async def _handle_end_audio(
     _log_elapsed("realtime.end_audio_received_seconds", state.started_at)
     _log_elapsed("realtime.asr_finish_start_seconds", state.started_at)
     asr_result = await state.asr_session.finish()
+    state.asr_mode = state.asr_session.mode
     _log_elapsed("realtime.asr_finish_done_seconds", state.started_at)
     await _send_event(
         websocket,
