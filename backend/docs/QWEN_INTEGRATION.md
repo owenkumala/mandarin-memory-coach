@@ -321,10 +321,16 @@ TTS chunk tasks have completed or emitted warning errors.
 
 Realtime tutor text is prompted more strictly than the REST tutor response
 because it is fed directly into sentence-level TTS. The realtime prompt asks for
-2-3 short spoken sentences, mainly Mandarin, normal Chinese sentence endings,
+1-2 short spoken sentences, mainly Mandarin, normal Chinese sentence endings,
 no emoji, no markdown, no bullet points, no quote-heavy examples, and concise
-HSK-appropriate wording. HSK1-HSK3 replies should stay under about 120 Chinese
-characters; HSK4-HSK6 replies should stay under about 180.
+HSK-appropriate wording. The first model-generated sentence should be the
+correction or direct replacement; the optional second sentence should ask the
+learner to repeat or answer. HSK1-HSK3 replies target about 55 Chinese
+characters or fewer; HSK4-HSK6 replies target about 80. Detailed mistake
+explanations, memory updates, and next-drill analysis arrive later through
+`feedback_ready` and `memory_updated` instead of being spoken immediately.
+The scenario comes from the WebSocket `start` message; `restaurant ordering` is
+only the default/demo scenario, not a hardcoded realtime tutoring scene.
 
 After `asr_final`, realtime mode emits the fast acknowledgement sentence as
 sequence `0`. If the shared fast-ack audio file is already cached, the matching

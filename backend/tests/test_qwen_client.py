@@ -193,22 +193,32 @@ def test_realtime_tutor_prompt_is_tts_safe_and_level_aware() -> None:
     """Realtime tutor prompts constrain output for short TTS-friendly chunks."""
     system_prompt = _tutor_realtime_system_prompt()
     user_prompt = _tutor_realtime_user_prompt(
-        transcript="我想点菜",
+        transcript="我想入住",
         memory=_empty_memory(),
-        scenario="restaurant ordering",
+        scenario="hotel check-in",
         level="HSK3 lower intermediate",
     )
 
     assert "A short acknowledgement has already been spoken" in system_prompt
     assert "Do not repeat that acknowledgement" in system_prompt
-    assert "2 to 3 short spoken sentences" in system_prompt
+    assert "maximum of 2 short spoken sentences" in system_prompt
+    assert "corrected phrase or direct replacement" in system_prompt
+    assert "asks the learner to repeat or answer" in system_prompt
+    assert "save detailed feedback for the structured analysis call" in system_prompt
     assert "under 25 Chinese characters" in system_prompt
     assert "Do not use emoji" in system_prompt
     assert "Avoid nested Chinese quotation marks" in system_prompt
-    assert "under 120 Chinese characters" in system_prompt
+    assert "55 Chinese characters or fewer" in system_prompt
+    assert "80 Chinese characters or fewer" in system_prompt
+    assert "Use the provided scenario dynamically" in system_prompt
     assert "HSK3 lower intermediate" in user_prompt
-    assert "Start directly with the correction" in user_prompt
-    assert "For HSK3, use practical restaurant language" in user_prompt
+    assert "hotel check-in" in user_prompt
+    assert "maximum of 2 short spoken sentences" in user_prompt
+    assert "First sentence: give the corrected phrase" in user_prompt
+    assert "Save detailed mistake explanations" in user_prompt
+    assert "For HSK3, use practical restaurant language" not in user_prompt
+    assert "我要一份宫保鸡丁" not in system_prompt
+    assert "我要一份宫保鸡丁" not in user_prompt
 
 
 def test_fake_asr_still_returns_fixed_transcript() -> None:

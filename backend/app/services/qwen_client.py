@@ -357,17 +357,22 @@ def _tutor_realtime_system_prompt() -> str:
         "Your realtime reply will be spoken by text-to-speech. "
         "A short acknowledgement has already been spoken: 我来帮你改一句。 "
         "Do not repeat that acknowledgement. "
-        "Reply in 2 to 3 short spoken sentences. "
-        "Start directly with the correction. "
+        "Reply with a maximum of 2 short spoken sentences. "
+        "The first sentence must be the corrected phrase or direct replacement. "
+        "The optional second sentence asks the learner to repeat or answer. "
+        "Do not explain every mistake in the spoken reply; save detailed "
+        "feedback for the structured analysis call. "
         "The first generated sentence must be under 25 Chinese characters. "
         "Use mainly Mandarin, with brief English only if necessary. "
         "Do not use emoji, markdown, bullet points, parentheses, slash marks, "
         "plus signs, weird symbols, or quote-heavy explanations. "
         "Avoid nested Chinese quotation marks. "
         "End every sentence with normal Chinese punctuation: 。！？ "
-        "For HSK1-HSK3, keep the total reply under 120 Chinese characters. "
-        "For HSK4-HSK6, keep the total reply under 180 Chinese characters. "
-        "For HSK3, use practical scenario language but avoid complex wording. "
+        "For HSK1-HSK3, target 55 Chinese characters or fewer. "
+        "For HSK4-HSK6, target 80 Chinese characters or fewer. "
+        "Use the provided scenario dynamically; never hardcode one scene. "
+        "Do not invent specific dish, item, or place examples unless the learner "
+        "mentioned them or the scenario strongly needs a placeholder. "
         "Keep the reply concise, friendly, and suitable for sentence-level TTS."
     )
 
@@ -866,18 +871,23 @@ def _tutor_realtime_user_prompt(
         Realtime TTS constraints:
         - A short acknowledgement has already been spoken: 我来帮你改一句。
         - Do not repeat that acknowledgement.
-        - Start directly with the correction.
-        - Reply with 2 to 3 short spoken sentences only.
+        - Reply with a maximum of 2 short spoken sentences.
+        - First sentence: give the corrected phrase or direct replacement.
+        - Optional second sentence: ask the learner to repeat or answer.
         - The first generated sentence must be under 25 Chinese characters.
         - Do not use emoji, markdown, bullets, parentheses, slash marks, plus signs,
           tables, headings, or quote-heavy examples.
-        - Avoid nested Chinese quotation marks and avoid long explanations.
+        - Avoid nested Chinese quotation marks, long explanations, and multiple
+          teaching points.
         - End each sentence with normal Chinese punctuation: 。！？
-        - For HSK1-HSK3, keep the total reply under 120 Chinese characters.
-        - For HSK4-HSK6, keep the total reply under 180 Chinese characters.
-        - For HSK3, use practical restaurant language but not complex phrasing.
+        - For HSK1-HSK3, target 55 Chinese characters or fewer.
+        - For HSK4-HSK6, target 80 Chinese characters or fewer.
+        - Use the provided scenario dynamically: {scenario}.
+        - Do not invent specific dish, item, or place examples unless the learner
+          mentioned them or the scenario strongly needs a placeholder.
+        - Save detailed mistake explanations for the structured feedback call.
 
-        Give one useful correction and one short next speaking prompt.
+        Give one useful correction and, if needed, one short repeat prompt.
         """
     ).strip()
 
