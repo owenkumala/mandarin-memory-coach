@@ -16,6 +16,7 @@ from app.services.qwen_client import QwenClient
 from app.services.realtime_asr_service import (
     BufferedRealtimeAsrSession,
     QwenStreamingRealtimeAsrSession,
+    build_qwen_realtime_asr_url,
     build_realtime_asr_session,
     sanitize_realtime_audio_metadata,
 )
@@ -305,6 +306,28 @@ def test_realtime_asr_streaming_mode_requires_pcm_metadata() -> None:
     assert streaming_session.mode == "qwen_streaming_realtime"
     assert isinstance(fallback_session, BufferedRealtimeAsrSession)
     assert fallback_session.mode == "buffered_fallback"
+
+
+def test_qwen_realtime_asr_url_builder_adds_model_query() -> None:
+    """Raw Qwen realtime ASR URL builder appends model exactly once."""
+    assert build_qwen_realtime_asr_url(
+        base_url="",
+        model="qwen3-asr-flash-realtime",
+    ) == (
+        "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+        "?model=qwen3-asr-flash-realtime"
+    )
+    assert build_qwen_realtime_asr_url(
+        base_url="wss://dashscope.example/api-ws/v1/realtime",
+        model="qwen3-asr-flash-realtime",
+    ) == (
+        "wss://dashscope.example/api-ws/v1/realtime"
+        "?model=qwen3-asr-flash-realtime"
+    )
+    assert build_qwen_realtime_asr_url(
+        base_url="wss://dashscope.example/api-ws/v1/realtime?model=custom-model",
+        model="qwen3-asr-flash-realtime",
+    ) == "wss://dashscope.example/api-ws/v1/realtime?model=custom-model"
 
 
 def test_qwen_streaming_asr_session_emits_partial_before_finish() -> None:

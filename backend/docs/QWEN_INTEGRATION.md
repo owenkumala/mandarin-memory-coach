@@ -65,7 +65,7 @@ QWEN_ASR_REQUEST_TIMEOUT_SECONDS=30
 QWEN_ASR_MAX_RETRIES=0
 REALTIME_ASR_MODE=buffered_fallback
 REALTIME_ASR_MODEL=qwen3-asr-flash-realtime
-REALTIME_ASR_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime
+REALTIME_ASR_BASE_URL=
 REALTIME_ASR_SAMPLE_RATE=16000
 REALTIME_ASR_AUDIO_FORMAT=pcm
 REALTIME_ASR_SESSION_FINISH_TIMEOUT_SECONDS=20
@@ -153,10 +153,11 @@ branch should only use official SDK surfaces. Local SDK inspection found:
   generic DashScope realtime ASR models.
 - `dashscope.audio.qwen_asr.QwenTranscription`, which is a Qwen batch
   transcription API.
-- `dashscope.audio.qwen_omni.omni_realtime.OmniRealtimeConversation`, whose
-  `TranscriptionParams` docs explicitly say they are effective with
-  `qwen3-asr-flash-realtime` or later models. This is the official SDK surface
-  used for opt-in `asr_mode=qwen_streaming_realtime`.
+- The Qwen Cloud `qwen3-asr-flash-realtime` model page shows raw websocket
+  usage against `wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=...`
+  with headers `Authorization: Bearer ...` and `OpenAI-Beta: realtime=v1`.
+  This raw protocol is now used for opt-in
+  `asr_mode=qwen_streaming_realtime`.
 
 The default realtime WebSocket endpoint still uses a `RealtimeAsrSession`
 abstraction with a buffered fallback implementation. The frontend sends base64
@@ -171,18 +172,40 @@ An opt-in Qwen streaming mode is available with:
 ```text
 REALTIME_ASR_MODE=qwen_streaming_realtime
 REALTIME_ASR_MODEL=qwen3-asr-flash-realtime
-REALTIME_ASR_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime
+REALTIME_ASR_BASE_URL=
 REALTIME_ASR_SAMPLE_RATE=16000
 REALTIME_ASR_AUDIO_FORMAT=pcm
 ```
 
-In this mode, `start()` opens the official DashScope Qwen Omni realtime
-connection, `accept_audio_chunk()` forwards each incoming PCM chunk immediately,
-and callback transcription messages are converted to `asr_partial` events. On
-`end_audio`, the provider stream is committed/finalized and the backend emits
-the normal `asr_final` event. The session also keeps a local audio buffer so it
-can fall back to `BufferedRealtimeAsrSession` if the provider stream fails or
-returns no transcript.
+If `REALTIME_ASR_BASE_URL` is blank, the backend uses
+`wss://dashscope.aliyuncs.com/api-ws/v1/realtime` and appends
+`?model=<REALTIME_ASR_MODEL>`. If you set a base URL that already includes a
+`model` query parameter, the backend does not add a second one.
+
+In this mode, `start()` opens the raw official Qwen realtime websocket and
+sends:
+
+```json
+{
+  "type": "session.update",
+  "session": {
+    "modalities": ["text"],
+    "input_audio_format": "pcm",
+    "sample_rate": 16000,
+    "input_audio_transcription": {"language": "zh"},
+    "turn_detection": null
+  }
+}
+```
+
+`accept_audio_chunk()` immediately sends each PCM chunk as
+`input_audio_buffer.append`. On `end_audio`, the provider sends
+`input_audio_buffer.commit`, waits for a final transcript event, and then the
+backend emits the normal `asr_final` event. Provider callback transcription
+messages are converted to `asr_partial` events while audio is still arriving.
+The session also keeps a local audio buffer so it can fall back to
+`BufferedRealtimeAsrSession` if the provider stream fails or returns no
+transcript.
 
 Important audio-format constraint: Qwen streaming mode expects raw PCM, 16 kHz,
 mono, 16-bit audio chunks. Browser WebM/Opus, MP3, and M4A chunks are not sent
@@ -453,8 +476,8 @@ ASR path. Cached fast acknowledgement audio can start playback immediately after
 
 When `REALTIME_ASR_MODE=qwen_streaming_realtime` and the client sends raw PCM
 chunks, ASR starts before `end_audio`. Incoming chunks are forwarded immediately
-to the DashScope Qwen Omni realtime provider, partial transcription callbacks
-emit `asr_partial`, and `end_audio` finalizes the provider stream before the
+to the raw Qwen realtime websocket, partial transcription callbacks emit
+`asr_partial`, and `end_audio` commits the provider audio buffer before the
 backend emits `asr_final`. The tutor/feedback/TTS pipeline still starts after
 `asr_final`; full-duplex interruption is not implemented yet.
 

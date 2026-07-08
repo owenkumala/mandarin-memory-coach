@@ -18,10 +18,11 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.core.config import Settings  # noqa: E402
-from app.services.qwen_client import QwenClient  # noqa: E402
+from app.services.qwen_client import QwenClient, _asr_api_key  # noqa: E402
 from app.services.realtime_asr_service import (  # noqa: E402
     REALTIME_ASR_MODE_QWEN_STREAMING,
     QwenStreamingRealtimeAsrSession,
+    build_qwen_realtime_asr_url,
 )
 
 
@@ -34,8 +35,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chunk-ms",
         type=int,
-        default=200,
+        default=100,
         help="Approximate PCM milliseconds per provider append.",
+    )
+    parser.add_argument(
+        "--base-url",
+        help="Override REALTIME_ASR_BASE_URL for this diagnostic run.",
+    )
+    parser.add_argument(
+        "--debug-provider-events",
+        action="store_true",
+        help="Log provider event types and payload keys, never audio or keys.",
     )
     parser.add_argument("--user-id", default="demo-user-realtime-streaming-asr")
     return parser.parse_args()
@@ -45,6 +55,8 @@ async def run_diagnostic(args: argparse.Namespace) -> None:
     """Stream local PCM audio and print partial/final transcript events."""
     load_dotenv(BACKEND_DIR / ".env")
     settings = Settings()
+    if args.base_url:
+        settings = settings.model_copy(update={"REALTIME_ASR_BASE_URL": args.base_url})
     if settings.REALTIME_ASR_MODE.strip().lower() != REALTIME_ASR_MODE_QWEN_STREAMING:
         raise ValueError(
             "Set REALTIME_ASR_MODE=qwen_streaming_realtime in backend/.env "
@@ -62,8 +74,10 @@ async def run_diagnostic(args: argparse.Namespace) -> None:
         user_id=args.user_id,
         audio_filename=audio_path.name,
         audio_mime_type="audio/pcm",
+        debug_provider_events=args.debug_provider_events,
     )
     started_at = time.perf_counter()
+    _print_config(settings)
     print(
         "Streaming PCM chunks to Qwen realtime ASR. "
         "Do not use MP3/WebM with this diagnostic.",
@@ -100,6 +114,26 @@ def _chunk_size(sample_rate: int, chunk_ms: int) -> int:
         raise ValueError("--chunk-ms must be greater than 0.")
     bytes_per_second = sample_rate * 2
     return max(1, int(bytes_per_second * chunk_ms / 1000))
+
+
+def _print_config(settings: Settings) -> None:
+    """Print safe streaming ASR configuration facts."""
+    try:
+        _, key_source = _asr_api_key(settings)
+    except ValueError:
+        key_source = "missing"
+    resolved_url = build_qwen_realtime_asr_url(
+        base_url=settings.REALTIME_ASR_BASE_URL,
+        model=settings.REALTIME_ASR_MODEL,
+    )
+    print(f"has_QWEN_API_KEY={'yes' if settings.QWEN_API_KEY else 'no'}")
+    print(f"has_DASHSCOPE_API_KEY={'yes' if settings.DASHSCOPE_API_KEY else 'no'}")
+    print(f"key_source={key_source}")
+    print(f"REALTIME_ASR_MODEL={settings.REALTIME_ASR_MODEL}")
+    print(f"REALTIME_ASR_BASE_URL={settings.REALTIME_ASR_BASE_URL or '(default)'}")
+    print(f"REALTIME_ASR_URL={resolved_url}")
+    print(f"REALTIME_ASR_SAMPLE_RATE={settings.REALTIME_ASR_SAMPLE_RATE}")
+    print(f"REALTIME_ASR_AUDIO_FORMAT={settings.REALTIME_ASR_AUDIO_FORMAT}")
 
 
 def _print_event(started_at: float, event: object) -> None:

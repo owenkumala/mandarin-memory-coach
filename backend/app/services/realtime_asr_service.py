@@ -6,12 +6,18 @@ behind the same interface when the Qwen realtime ASR contract is clear.
 """
 
 import base64
+import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Protocol
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from uuid import uuid4
+
+import websocket
 
 from app.core.config import Settings
 from app.schemas import RealtimeVoiceEvent, RealtimeVoiceEventType
@@ -27,6 +33,7 @@ DEFAULT_REALTIME_AUDIO_FILENAME = "realtime.webm"
 DEFAULT_REALTIME_AUDIO_MIME_TYPE = "audio/webm"
 REALTIME_ASR_MODE_BUFFERED = "buffered_fallback"
 REALTIME_ASR_MODE_QWEN_STREAMING = "qwen_streaming_realtime"
+DEFAULT_QWEN_REALTIME_ASR_BASE_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
 REALTIME_AUDIO_MIME_TYPES = {
     ".mp3": "audio/mpeg",
     ".m4a": "audio/mp4",
@@ -177,6 +184,7 @@ class QwenStreamingRealtimeAsrSession(RealtimeAsrSession):
     audio_filename: str = "realtime.pcm"
     audio_mime_type: str = "audio/pcm"
     provider: RealtimeAsrProvider | None = None
+    debug_provider_events: bool = False
     _callback: "_QwenStreamingAsrCallback | None" = None
     _fallback: BufferedRealtimeAsrSession = field(init=False)
     _streaming_failed: bool = False
@@ -202,7 +210,9 @@ class QwenStreamingRealtimeAsrSession(RealtimeAsrSession):
 
     async def start(self) -> list[RealtimeVoiceEvent]:
         """Open the Qwen realtime ASR stream."""
-        self._callback = _QwenStreamingAsrCallback()
+        self._callback = _QwenStreamingAsrCallback(
+            debug_provider_events=self.debug_provider_events,
+        )
         try:
             self.provider.start(self._callback)
         except Exception as exc:
@@ -261,56 +271,147 @@ class QwenStreamingRealtimeAsrSession(RealtimeAsrSession):
 
 
 class QwenRealtimeAsrProvider:
-    """Thin wrapper around DashScope's official Qwen omni realtime SDK."""
+    """Raw official Qwen3 realtime ASR websocket provider."""
 
     def __init__(self, settings: Settings) -> None:
         """Store settings for lazy SDK construction."""
         self.settings = settings
-        self._conversation = None
+        self._websocket = None
+        self._receiver_thread: threading.Thread | None = None
+        self._callback: _QwenStreamingAsrCallback | None = None
 
     def start(self, callback: "_QwenStreamingAsrCallback") -> None:
         """Open and configure the Qwen realtime ASR websocket."""
-        from dashscope.audio.qwen_omni.omni_realtime import (  # noqa: PLC0415
-            MultiModality,
-            OmniRealtimeConversation,
-            TranscriptionParams,
-        )
-
         api_key, _key_source = _asr_api_key(self.settings)
-        base_url = self.settings.REALTIME_ASR_BASE_URL.strip() or None
-        self._conversation = OmniRealtimeConversation(
+        self._callback = callback
+        url = build_qwen_realtime_asr_url(
+            base_url=self.settings.REALTIME_ASR_BASE_URL,
             model=self.settings.REALTIME_ASR_MODEL,
-            callback=callback,
-            url=base_url,
-            api_key=api_key,
         )
-        self._conversation.connect()
-        self._conversation.update_session(
-            output_modalities=[MultiModality.TEXT],
-            enable_input_audio_transcription=True,
-            enable_turn_detection=False,
-            transcription_params=TranscriptionParams(
-                language=self.settings.QWEN_ASR_LANGUAGE,
-                sample_rate=self.settings.REALTIME_ASR_SAMPLE_RATE,
-                input_audio_format=self.settings.REALTIME_ASR_AUDIO_FORMAT,
-            ),
+        self._websocket = websocket.create_connection(
+            url,
+            header=[
+                f"Authorization: Bearer {api_key}",
+                "OpenAI-Beta: realtime=v1",
+            ],
+            timeout=5,
         )
+        self._receiver_thread = threading.Thread(
+            target=self._receive_loop,
+            name="qwen-realtime-asr-receiver",
+            daemon=True,
+        )
+        self._receiver_thread.start()
+        callback.on_open()
+        self._send_json(_session_update_payload(self.settings))
 
     def append_audio(self, audio_bytes: bytes) -> None:
         """Forward one PCM audio chunk to the Qwen realtime stream."""
-        if self._conversation is None:
+        if self._websocket is None:
             raise RuntimeError("Qwen realtime ASR provider has not started.")
-        audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
-        self._conversation.append_audio(audio_b64)
+        self._send_json(
+            {
+                "event_id": _provider_event_id(),
+                "type": "input_audio_buffer.append",
+                "audio": base64.b64encode(audio_bytes).decode("ascii"),
+            },
+        )
 
     def finish(self) -> None:
         """Commit buffered provider audio and close the realtime session."""
-        if self._conversation is None:
+        if self._websocket is None or self._callback is None:
             raise RuntimeError("Qwen realtime ASR provider has not started.")
-        self._conversation.commit()
-        self._conversation.end_session(
-            timeout=self.settings.REALTIME_ASR_SESSION_FINISH_TIMEOUT_SECONDS,
+        try:
+            self._send_json(
+                {
+                    "event_id": _provider_event_id(),
+                    "type": "input_audio_buffer.commit",
+                },
+            )
+            if not self._callback.wait_for_final(
+                timeout=self.settings.REALTIME_ASR_SESSION_FINISH_TIMEOUT_SECONDS,
+            ):
+                raise TimeoutError("Qwen realtime ASR final transcript timed out.")
+            if self._callback.error_message:
+                raise RuntimeError(self._callback.error_message)
+        finally:
+            self._close()
+
+    def _send_json(self, payload: dict[str, object]) -> None:
+        """Send one JSON event to the provider websocket."""
+        if self._websocket is None:
+            raise RuntimeError("Qwen realtime ASR websocket is not connected.")
+        self._websocket.send(json.dumps(payload, ensure_ascii=False))
+
+    def _receive_loop(self) -> None:
+        """Read provider websocket messages until close."""
+        while True:
+            try:
+                raw_message = self._websocket.recv() if self._websocket else None
+            except Exception as exc:
+                if self._callback:
+                    self._callback.on_error(str(exc))
+                return
+            if raw_message is None:
+                return
+            try:
+                message = json.loads(raw_message) if isinstance(raw_message, str) else {}
+            except json.JSONDecodeError:
+                logger.debug("qwen.realtime_asr_non_json_message")
+                continue
+            if self._callback:
+                self._callback.on_event(message)
+
+    def _close(self) -> None:
+        """Close provider websocket and join the receiver thread briefly."""
+        websocket_connection = self._websocket
+        self._websocket = None
+        if websocket_connection is not None:
+            websocket_connection.close()
+        if self._receiver_thread is not None:
+            self._receiver_thread.join(timeout=1)
+        if self._callback:
+            self._callback.on_close()
+
+
+def build_qwen_realtime_asr_url(base_url: str, model: str) -> str:
+    """Return the official raw Qwen realtime ASR websocket URL."""
+    resolved_base_url = base_url.strip() or DEFAULT_QWEN_REALTIME_ASR_BASE_URL
+    parsed = urlsplit(resolved_base_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if "model" not in query:
+        query["model"] = model
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(query),
+            parsed.fragment,
         )
+    )
+
+
+def _session_update_payload(settings: Settings) -> dict[str, object]:
+    """Return the official Qwen realtime ASR session.update payload."""
+    return {
+        "event_id": _provider_event_id(),
+        "type": "session.update",
+        "session": {
+            "modalities": ["text"],
+            "input_audio_format": settings.REALTIME_ASR_AUDIO_FORMAT,
+            "sample_rate": settings.REALTIME_ASR_SAMPLE_RATE,
+            "input_audio_transcription": {
+                "language": settings.QWEN_ASR_LANGUAGE,
+            },
+            "turn_detection": None,
+        },
+    }
+
+
+def _provider_event_id() -> str:
+    """Return a unique event id for Qwen realtime websocket messages."""
+    return f"event_{int(time.time() * 1000)}_{uuid4().hex[:8]}"
 
 
 def build_realtime_asr_session(
@@ -362,11 +463,14 @@ def build_realtime_asr_session(
 class _QwenStreamingAsrCallback:
     """Collect Qwen realtime ASR callback events across SDK worker threads."""
 
-    def __init__(self) -> None:
+    def __init__(self, debug_provider_events: bool = False) -> None:
         """Create thread-safe event storage for provider callbacks."""
         self.events: Queue[RealtimeVoiceEvent] = Queue()
         self.latest_transcript = ""
         self.final_transcript = ""
+        self.error_message = ""
+        self.final_event = threading.Event()
+        self.debug_provider_events = debug_provider_events
 
     def on_open(self) -> None:
         """Provider stream opened."""
@@ -376,10 +480,18 @@ class _QwenStreamingAsrCallback:
 
     def on_error(self, message) -> None:
         """Provider emitted an error callback."""
+        self.error_message = str(message)
         self.events.put(_streaming_asr_warning(str(message)))
+        self.final_event.set()
 
     def on_event(self, message) -> None:
         """Convert provider JSON messages into realtime ASR events."""
+        if self.debug_provider_events and isinstance(message, dict):
+            logger.info(
+                "qwen.realtime_asr_event type=%s payload_keys=%s",
+                message.get("type"),
+                sorted(str(key) for key in message.keys()),
+            )
         provider_events = _provider_message_to_events(message)
         for event in provider_events:
             text = event.payload.get("text") or event.payload.get("transcript")
@@ -387,7 +499,11 @@ class _QwenStreamingAsrCallback:
                 self.latest_transcript = text.strip()
                 if event.type == RealtimeVoiceEventType.ASR_FINAL:
                     self.final_transcript = text.strip()
+                    self.final_event.set()
             self.events.put(event)
+        if isinstance(message, dict) and message.get("type") == "error":
+            self.error_message = str(message.get("error") or message)
+            self.final_event.set()
 
     def drain_events(self) -> list[RealtimeVoiceEvent]:
         """Return all currently queued callback events."""
@@ -397,6 +513,10 @@ class _QwenStreamingAsrCallback:
                 drained.append(self.events.get_nowait())
             except Empty:
                 return drained
+
+    def wait_for_final(self, timeout: int) -> bool:
+        """Wait until a final transcript, provider error, or timeout."""
+        return self.final_event.wait(timeout)
 
 
 def _provider_message_to_events(message: object) -> list[RealtimeVoiceEvent]:
