@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 
+import certifi
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings, get_settings
@@ -15,6 +16,7 @@ from app.services import realtime_asr_service, realtime_voice_service
 from app.services.qwen_client import QwenClient
 from app.services.realtime_asr_service import (
     BufferedRealtimeAsrSession,
+    QwenRealtimeAsrProvider,
     QwenStreamingRealtimeAsrSession,
     build_qwen_realtime_asr_url,
     build_realtime_asr_session,
@@ -328,6 +330,69 @@ def test_qwen_realtime_asr_url_builder_adds_model_query() -> None:
         base_url="wss://dashscope.example/api-ws/v1/realtime?model=custom-model",
         model="qwen3-asr-flash-realtime",
     ) == "wss://dashscope.example/api-ws/v1/realtime?model=custom-model"
+
+
+def test_qwen_realtime_asr_provider_uses_certifi_ssl_options(monkeypatch) -> None:
+    """Raw Qwen websocket ASR passes certifi CA certs without exposing keys."""
+    captured: dict[str, object] = {}
+
+    class FakeWebSocket:
+        """Minimal websocket-client stand-in for provider start tests."""
+
+        def send(self, payload: str) -> None:
+            captured.setdefault("sent_payloads", []).append(payload)
+
+        def recv(self) -> None:
+            return None
+
+        def close(self) -> None:
+            captured["closed"] = True
+
+    def fake_create_connection(
+        url: str,
+        header: list[str],
+        timeout: int,
+        sslopt: dict[str, str],
+    ) -> FakeWebSocket:
+        captured["url"] = url
+        captured["header"] = header
+        captured["timeout"] = timeout
+        captured["sslopt"] = sslopt
+        return FakeWebSocket()
+
+    monkeypatch.setattr(
+        realtime_asr_service.websocket,
+        "create_connection",
+        fake_create_connection,
+    )
+    settings = Settings(
+        USE_FAKE_QWEN=True,
+        USE_FAKE_TTS=True,
+        QWEN_API_KEY="test-qwen-key",
+        DASHSCOPE_API_KEY="",
+        REALTIME_ASR_MODEL="qwen3-asr-flash-realtime",
+        REALTIME_ASR_BASE_URL="",
+        DATABASE_URL=os.environ["DATABASE_URL"],
+        STORAGE_DIR=os.environ["STORAGE_DIR"],
+        USER_AUDIO_DIR=os.environ["USER_AUDIO_DIR"],
+    )
+    provider = QwenRealtimeAsrProvider(settings=settings)
+
+    provider.start(realtime_asr_service._QwenStreamingAsrCallback())
+    provider._close()
+
+    headers = captured["header"]
+    auth_headers = [
+        header for header in headers if header.startswith("Authorization: Bearer ")
+    ]
+    assert captured["sslopt"] == {"ca_certs": certifi.where()}
+    assert len(auth_headers) == 1
+    assert auth_headers[0] != "Authorization: Bearer "
+    assert "OpenAI-Beta: realtime=v1" in headers
+    assert captured["url"] == (
+        "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+        "?model=qwen3-asr-flash-realtime"
+    )
 
 
 def test_qwen_streaming_asr_session_emits_partial_before_finish() -> None:

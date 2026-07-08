@@ -198,6 +198,12 @@ sends:
 }
 ```
 
+The raw realtime ASR websocket uses the `certifi` CA bundle through
+`websocket-client`'s SSL options (`ca_certs=certifi.where()`). The standalone
+diagnostic also applies the backend certificate helper before opening the
+websocket, so it does not depend on FastAPI app startup. Do not disable SSL
+verification for this path.
+
 `accept_audio_chunk()` immediately sends each PCM chunk as
 `input_audio_buffer.append`. On `end_audio`, the provider sends
 `input_audio_buffer.commit`, waits for a final transcript event, and then the
@@ -525,7 +531,8 @@ python3 scripts/check_realtime_streaming_asr.py sample-mandarin.pcm
 
 The script requires `REALTIME_ASR_MODE=qwen_streaming_realtime`, a configured
 ASR API key, and PCM audio. It prints partial/final transcript events with
-timestamps and never prints credentials.
+timestamps, the resolved `certifi` bundle path, whether certificate environment
+variables are set, and never prints credentials.
 
 Sentence-level TTS runs as tutor tokens arrive. The backend finalizes sentences
 on `。！？!?` or newline, starts `synthesize_speech()` for each sentence, saves

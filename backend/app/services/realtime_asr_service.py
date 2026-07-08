@@ -8,6 +8,7 @@ behind the same interface when the Qwen realtime ASR contract is clear.
 import base64
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from typing import Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
+import certifi
 import websocket
 
 from app.core.config import Settings
@@ -295,6 +297,14 @@ class QwenRealtimeAsrProvider:
                 "OpenAI-Beta: realtime=v1",
             ],
             timeout=5,
+            sslopt={"ca_certs": certifi.where()},
+        )
+        logger.info(
+            "qwen.realtime_asr_ssl ca_certs=%s ssl_cert_file_set=%s "
+            "requests_ca_bundle_set=%s",
+            certifi.where(),
+            bool(os.environ.get("SSL_CERT_FILE")),
+            bool(os.environ.get("REQUESTS_CA_BUNDLE")),
         )
         self._receiver_thread = threading.Thread(
             target=self._receive_loop,

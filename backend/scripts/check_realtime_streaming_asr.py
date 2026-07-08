@@ -11,12 +11,14 @@ import time
 from pathlib import Path
 import sys
 
+import certifi
 from dotenv import load_dotenv
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from app.core.certificates import configure_python_ssl_certificates  # noqa: E402
 from app.core.config import Settings  # noqa: E402
 from app.services.qwen_client import QwenClient, _asr_api_key  # noqa: E402
 from app.services.realtime_asr_service import (  # noqa: E402
@@ -54,6 +56,7 @@ def parse_args() -> argparse.Namespace:
 async def run_diagnostic(args: argparse.Namespace) -> None:
     """Stream local PCM audio and print partial/final transcript events."""
     load_dotenv(BACKEND_DIR / ".env")
+    configure_python_ssl_certificates()
     settings = Settings()
     if args.base_url:
         settings = settings.model_copy(update={"REALTIME_ASR_BASE_URL": args.base_url})
@@ -134,6 +137,9 @@ def _print_config(settings: Settings) -> None:
     print(f"REALTIME_ASR_URL={resolved_url}")
     print(f"REALTIME_ASR_SAMPLE_RATE={settings.REALTIME_ASR_SAMPLE_RATE}")
     print(f"REALTIME_ASR_AUDIO_FORMAT={settings.REALTIME_ASR_AUDIO_FORMAT}")
+    print(f"certifi_where={certifi.where()}")
+    print(f"SSL_CERT_FILE_set={'yes' if settings.SSL_CERT_FILE else 'no'}")
+    print(f"REQUESTS_CA_BUNDLE_set={'yes' if settings.REQUESTS_CA_BUNDLE else 'no'}")
 
 
 def _print_event(started_at: float, event: object) -> None:
