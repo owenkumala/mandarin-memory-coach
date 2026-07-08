@@ -140,6 +140,8 @@ async def _handle_start(
         asr_session=asr_session,
         memory_before=memory_before,
         started_at=time.perf_counter(),
+        asr_mode=asr_session.mode,
+        audio_ref_mode=settings.QWEN_ASR_AUDIO_REF_MODE.strip().lower(),
     )
     await _send_event(
         websocket,
@@ -150,7 +152,7 @@ async def _handle_start(
                 "user_id": user_id,
                 "scenario": scenario,
                 "level": level,
-                "asr_mode": "buffered_fallback",
+                "asr_mode": state.asr_mode,
             },
         ),
     )
@@ -193,6 +195,7 @@ async def _handle_end_audio(
         ),
     )
     _log_elapsed("realtime.asr_final_seconds", state.started_at)
+    _record_timing(state, "asr_total")
     fast_ack_task = await _start_fast_ack(
         websocket=websocket,
         qwen_client=qwen_client,
@@ -243,7 +246,12 @@ async def _run_tutor_feedback_memory_pipeline(
         level=state.level,
     ):
         tutor_reply_parts.append(token)
-        _log_once(state, "first_tutor_token_logged", "realtime.first_tutor_token_seconds")
+        _log_once(
+            state,
+            "first_tutor_token_logged",
+            "realtime.first_tutor_token_seconds",
+            timing_key="first_token",
+        )
         await _send_event(
             websocket,
             RealtimeVoiceEvent(
@@ -274,6 +282,7 @@ async def _run_tutor_feedback_memory_pipeline(
             )
 
     await _send_events(websocket, state, tts_pipeline.flush())
+    _record_tutor_stream_done(state)
 
     tutor_reply = "".join(tutor_reply_parts).strip()
     if analysis is None and analysis_task.done():
@@ -316,14 +325,19 @@ async def _run_tutor_feedback_memory_pipeline(
     )
     if analysis is None or not memory_sent:
         raise ValueError("Realtime feedback and memory update did not complete.")
+    done_elapsed = _record_timing(state, "done")
     await _send_event(
         websocket,
         RealtimeVoiceEvent(
             type=RealtimeVoiceEventType.DONE,
-            payload={"session_id": state.session_id},
+            payload={
+                "session_id": state.session_id,
+                "timings": _summary_timings(state),
+            },
         ),
     )
-    _log_elapsed("realtime.done_seconds", state.started_at)
+    logger.info("realtime.done_seconds=%.2f", done_elapsed)
+    _log_realtime_summary(state)
 
 
 async def _finish_analysis_tts_and_memory(
@@ -512,7 +526,8 @@ async def _emit_feedback_ready(
             payload={"feedback": analysis.model_dump(mode="json")},
         ),
     )
-    _log_elapsed("realtime.feedback_ready_seconds", state.started_at)
+    analysis_elapsed = _record_timing(state, "analysis")
+    logger.info("realtime.feedback_ready_seconds=%.2f", analysis_elapsed)
     return True
 
 
@@ -555,12 +570,14 @@ async def _send_events(
     for event in events:
         await _send_event(websocket, event)
         if event.type == RealtimeVoiceEventType.TUTOR_SENTENCE:
+            _record_tts_sentence_if_model_generated(state, event)
             _log_once(
                 state,
                 "first_tutor_sentence_logged",
                 "realtime.first_tutor_sentence_seconds",
             )
         if event.type == RealtimeVoiceEventType.AUDIO_CHUNK_READY:
+            _record_audio_chunk_timing(state, event)
             _log_once(
                 state,
                 "first_audio_chunk_logged",
@@ -677,6 +694,8 @@ class _RealtimeSessionState:
         asr_session: RealtimeAsrSession,
         memory_before: MemoryResponse,
         started_at: float,
+        asr_mode: str,
+        audio_ref_mode: str,
     ) -> None:
         """Store session fields that need to survive multiple messages."""
         self.session_id = session_id
@@ -686,9 +705,15 @@ class _RealtimeSessionState:
         self.asr_session = asr_session
         self.memory_before = memory_before
         self.started_at = started_at
+        self.asr_mode = asr_mode
+        self.audio_ref_mode = audio_ref_mode
         self.first_tutor_token_logged = False
         self.first_tutor_sentence_logged = False
         self.first_audio_chunk_logged = False
+        self.timings: dict[str, float] = {}
+        self.tts_chunks = 0
+        self.tts_started_elapsed: float | None = None
+        self.tutor_stream_started_at: float | None = None
 
 
 def _log_audio_received(
@@ -710,14 +735,115 @@ def _log_once(
     state: "_RealtimeSessionState",
     flag_name: str,
     metric_name: str,
+    timing_key: str | None = None,
 ) -> None:
     """Log a first-occurrence realtime milestone exactly once."""
     if getattr(state, flag_name):
         return
     setattr(state, flag_name, True)
-    _log_elapsed(metric_name, state.started_at)
+    elapsed = _record_timing(state, timing_key) if timing_key else _elapsed(state)
+    if timing_key == "first_token":
+        state.tutor_stream_started_at = time.perf_counter()
+    logger.info("%s=%.2f", metric_name, elapsed)
 
 
 def _log_elapsed(metric_name: str, started_at: float) -> None:
     """Log elapsed seconds for one realtime pipeline stage."""
     logger.info("%s=%.2f", metric_name, time.perf_counter() - started_at)
+
+
+def _elapsed(state: "_RealtimeSessionState") -> float:
+    """Return elapsed seconds since the realtime session started."""
+    return time.perf_counter() - state.started_at
+
+
+def _record_timing(state: "_RealtimeSessionState", timing_key: str | None) -> float:
+    """Record and return one elapsed timing mark for summary diagnostics."""
+    elapsed = _elapsed(state)
+    if timing_key:
+        state.timings[timing_key] = elapsed
+    return elapsed
+
+
+def _record_tts_sentence_if_model_generated(
+    state: "_RealtimeSessionState",
+    event: RealtimeVoiceEvent,
+) -> None:
+    """Mark when model-generated sentence TTS work first becomes queued."""
+    if _is_fast_ack_event(event):
+        return
+    if state.tts_started_elapsed is None:
+        state.tts_started_elapsed = _elapsed(state)
+
+
+def _record_audio_chunk_timing(
+    state: "_RealtimeSessionState",
+    event: RealtimeVoiceEvent,
+) -> None:
+    """Record first audio milestones and model TTS chunk totals."""
+    elapsed = _elapsed(state)
+    if _is_fast_ack_event(event):
+        state.timings.setdefault("fast_ack_audio", elapsed)
+        return
+    state.tts_chunks += 1
+    state.timings.setdefault("first_model_audio", elapsed)
+    if state.tts_started_elapsed is not None:
+        state.timings["tts_total"] = max(0.0, elapsed - state.tts_started_elapsed)
+
+
+def _record_tutor_stream_done(state: "_RealtimeSessionState") -> None:
+    """Record how long model tutor text streaming took after the first token."""
+    if state.tutor_stream_started_at is None:
+        state.timings.setdefault("tutor_stream", 0.0)
+        return
+    state.timings["tutor_stream"] = time.perf_counter() - state.tutor_stream_started_at
+
+
+def _is_fast_ack_event(event: RealtimeVoiceEvent) -> bool:
+    """Return whether an event belongs to the sequence-0 fast acknowledgement."""
+    return event.payload.get("source") == "fast_ack" or event.payload.get("sequence") == 0
+
+
+def _summary_timings(state: "_RealtimeSessionState") -> dict[str, object]:
+    """Return compact realtime timing diagnostics for logs and done payloads."""
+    return {
+        "asr_total": state.timings.get("asr_total"),
+        "first_token": state.timings.get("first_token"),
+        "fast_ack_audio": state.timings.get("fast_ack_audio"),
+        "first_model_audio": state.timings.get("first_model_audio"),
+        "tutor_stream": state.timings.get("tutor_stream"),
+        "tts_chunks": state.tts_chunks,
+        "tts_total": state.timings.get("tts_total"),
+        "analysis": state.timings.get("analysis"),
+        "done": state.timings.get("done"),
+        "asr_mode": state.asr_mode,
+        "audio_ref_mode": state.audio_ref_mode,
+    }
+
+
+def _log_realtime_summary(state: "_RealtimeSessionState") -> None:
+    """Log one compact per-turn realtime latency summary."""
+    timings = _summary_timings(state)
+    logger.info(
+        "realtime.summary asr_total=%s first_token=%s fast_ack_audio=%s "
+        "first_model_audio=%s tutor_stream=%s tts_chunks=%s tts_total=%s "
+        "analysis=%s done=%s asr_mode=%s audio_ref_mode=%s",
+        _format_timing(timings["asr_total"]),
+        _format_timing(timings["first_token"]),
+        _format_timing(timings["fast_ack_audio"]),
+        _format_timing(timings["first_model_audio"]),
+        _format_timing(timings["tutor_stream"]),
+        timings["tts_chunks"],
+        _format_timing(timings["tts_total"]),
+        _format_timing(timings["analysis"]),
+        _format_timing(timings["done"]),
+        timings["asr_mode"],
+        timings["audio_ref_mode"],
+    )
+
+
+def _format_timing(value: object) -> str:
+    """Format optional timing values for one-line summary logs."""
+    if isinstance(value, int | float):
+        return f"{float(value):.2f}"
+    return "none"

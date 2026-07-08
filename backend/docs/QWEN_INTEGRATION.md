@@ -150,11 +150,20 @@ branch does not invent an unsupported protocol. Local SDK inspection found:
   `qwen3-asr-flash-realtime` to a supported realtime Qwen ASR session.
 
 The realtime WebSocket endpoint therefore uses a `RealtimeAsrSession`
-abstraction with a buffered fallback implementation: the frontend sends base64
-audio chunks, the backend stores them, and on `end_audio` it reuses the stable
-`transcribe_audio()` path. If Qwen publishes or confirms the realtime model
-contract for this SDK, the provider-specific session should be added behind the
-same abstraction and emit `asr_partial` and `asr_final` events.
+abstraction with a buffered fallback implementation. The frontend sends base64
+audio chunks over the WebSocket, but those chunks are only buffered locally
+during the speaking turn. ASR begins after `end_audio`: the backend writes the
+full audio file, uploads or exposes it according to `QWEN_ASR_AUDIO_REF_MODE`,
+then reuses the stable `transcribe_audio()` path. This mode is reported as
+`asr_mode=buffered_fallback`.
+
+A future true streaming ASR implementation should fit behind the same
+`RealtimeAsrSession` interface: `start()` would open the official provider
+stream, `accept_audio_chunk()` would forward each incoming chunk immediately,
+and the session would emit `asr_partial` events before a final `asr_final`.
+The code includes a documented placeholder for that provider-specific Qwen
+session, but it intentionally does not invent or call an unsupported realtime
+Qwen protocol.
 
 TTS is optional and configured separately with `USE_FAKE_TTS`. When
 `USE_FAKE_TTS=true`, the backend keeps returning `tutor_audio_url=null` and the
@@ -319,6 +328,17 @@ not wait for `done` before showing or speaking the tutor reply. The terminal
 `done` event still waits until tutor text, feedback/memory work, and all pending
 TTS chunk tasks have completed or emitted warning errors.
 
+The final `done` event may include a `timings` object for diagnostics. The same
+values are logged in one compact server line:
+
+```text
+realtime.summary asr_total=... first_token=... fast_ack_audio=... first_model_audio=... tutor_stream=... tts_chunks=... tts_total=... analysis=... done=... asr_mode=buffered_fallback audio_ref_mode=s3_url
+```
+
+These values describe the current buffered flow. In particular, `asr_total`
+measures time until buffered ASR finishes after `end_audio`; it is not evidence
+that audio was streamed to Qwen while the learner was still speaking.
+
 Realtime treats malformed or schema-invalid structured analysis JSON as a
 recoverable model-output problem, not a terminal voice-session failure. If the
 analysis parser rejects the Qwen response, the backend emits:
@@ -406,7 +426,7 @@ chunks, writes one local audio file on `end_audio`, then reuses the stable Qwen
 ASR path. Cached fast acknowledgement audio can start playback immediately after
 `asr_final`, but it cannot reduce slow or variable ASR time before `asr_final`.
 True 1-2 second ChatGPT-like latency still requires a later supported streaming
-ASR implementation.
+ASR implementation that forwards chunks to Qwen before `end_audio`.
 
 When `asr_final` is slow, inspect backend logs for these stage timings:
 

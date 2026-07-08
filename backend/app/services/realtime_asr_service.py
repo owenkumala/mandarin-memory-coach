@@ -42,6 +42,11 @@ class RealtimeAsrResult:
 class RealtimeAsrSession:
     """Common interface for realtime or buffered ASR implementations."""
 
+    @property
+    def mode(self) -> str:
+        """Return a stable frontend/logging label for this ASR implementation."""
+        raise NotImplementedError
+
     async def start(self) -> list[RealtimeVoiceEvent]:
         """Start the ASR session and return any initial events."""
         raise NotImplementedError
@@ -66,6 +71,11 @@ class BufferedRealtimeAsrSession(RealtimeAsrSession):
     audio_mime_type: str = DEFAULT_REALTIME_AUDIO_MIME_TYPE
     chunks: list[bytes] = field(default_factory=list)
     bytes_received: int = 0
+
+    @property
+    def mode(self) -> str:
+        """Return the stable ASR mode label for frontend/debug events."""
+        return "buffered_fallback"
 
     async def start(self) -> list[RealtimeVoiceEvent]:
         """Start buffered ASR without opening any provider network stream."""
@@ -129,6 +139,35 @@ class BufferedRealtimeAsrSession(RealtimeAsrSession):
         return RealtimeAsrResult(transcript=transcript, audio_path=saved_audio_path)
 
 
+class QwenStreamingRealtimeAsrSession(RealtimeAsrSession):
+    """Placeholder for a future official Qwen streaming ASR implementation.
+
+    This class intentionally does not implement a private or guessed wire
+    protocol. When Qwen/DashScope documents a supported realtime ASR contract
+    for the target model, this session should open that provider stream in
+    start(), forward each accept_audio_chunk() payload immediately, emit
+    asr_partial/asr_final events as provider results arrive, and keep
+    BufferedRealtimeAsrSession as the safe fallback.
+    """
+
+    @property
+    def mode(self) -> str:
+        """Return the planned provider-specific ASR mode label."""
+        return "qwen_streaming_realtime"
+
+    async def start(self) -> list[RealtimeVoiceEvent]:
+        """Do not start an unsupported provider stream."""
+        raise NotImplementedError("Qwen streaming realtime ASR is not implemented.")
+
+    async def accept_audio_chunk(self, audio_bytes: bytes) -> list[RealtimeVoiceEvent]:
+        """Do not forward audio to an unsupported provider stream."""
+        raise NotImplementedError("Qwen streaming realtime ASR is not implemented.")
+
+    async def finish(self) -> RealtimeAsrResult:
+        """Do not finalize an unsupported provider stream."""
+        raise NotImplementedError("Qwen streaming realtime ASR is not implemented.")
+
+
 def build_realtime_asr_session(
     qwen_client: QwenClient,
     settings: Settings,
@@ -136,7 +175,12 @@ def build_realtime_asr_session(
     audio_filename: str | None = None,
     audio_mime_type: str | None = None,
 ) -> RealtimeAsrSession:
-    """Return the best supported realtime ASR session for current settings."""
+    """Return the best supported realtime ASR session for current settings.
+
+    TODO: choose QwenStreamingRealtimeAsrSession here only after the SDK or
+    provider docs expose a real supported streaming ASR protocol for the target
+    Qwen realtime model.
+    """
     metadata = sanitize_realtime_audio_metadata(
         audio_filename=audio_filename,
         audio_mime_type=audio_mime_type,

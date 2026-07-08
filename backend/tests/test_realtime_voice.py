@@ -129,7 +129,7 @@ def test_realtime_voice_chat_accepts_hsk3_and_emits_ordered_events(
     monkeypatch.setattr(QwenClient, "analyze_mistakes", fake_analyze_mistakes)
     monkeypatch.setattr(QwenClient, "synthesize_speech", fake_synthesize_speech)
 
-    with caplog.at_level(logging.INFO, logger="app.services.realtime_asr_service"):
+    with caplog.at_level(logging.INFO):
         with TestClient(app) as client:
             with client.websocket_connect("/api/v1/voice-chat/realtime") as websocket:
                 websocket.send_json(
@@ -151,6 +151,7 @@ def test_realtime_voice_chat_accepts_hsk3_and_emits_ordered_events(
 
     event_types = [event["type"] for event in events]
     assert event_types[0] == "session_started"
+    assert events[0]["payload"]["asr_mode"] == "buffered_fallback"
     assert "audio_received" in event_types
     assert "asr_final" in event_types
     assert "tutor_token" in event_types
@@ -174,6 +175,16 @@ def test_realtime_voice_chat_accepts_hsk3_and_emits_ordered_events(
     assert "realtime.asr_audio_extension=.webm" in caplog.text
     assert "realtime.asr_save_audio_seconds=" in caplog.text
     assert "realtime.asr_transcribe_seconds=" in caplog.text
+    assert "realtime.summary asr_total=" in caplog.text
+    assert "asr_mode=buffered_fallback" in caplog.text
+    done_timings = events[-1]["payload"]["timings"]
+    assert done_timings["asr_mode"] == "buffered_fallback"
+    assert done_timings["audio_ref_mode"] == get_settings().QWEN_ASR_AUDIO_REF_MODE
+    assert done_timings["asr_total"] is not None
+    assert done_timings["first_token"] is not None
+    assert done_timings["analysis"] is not None
+    assert done_timings["done"] is not None
+    assert done_timings["tts_chunks"] >= 1
 
 
 def test_realtime_voice_chat_preserves_mp3_audio_metadata(monkeypatch) -> None:
