@@ -40,6 +40,11 @@ ANALYSIS_JSON_EXAMPLE = {
             "type": "pronunciation",
             "weakness_category": "zh_ch_confusion",
             "target": "中国菜 / 吃",
+            "target_pinyin": "Zhōngguó cài / chī",
+            "heard_pinyin": None,
+            "problem_sound": "zh/ch",
+            "problem_tone": None,
+            "display_correction": "中国菜 zhōngguó cài；吃 chī",
             "severity": 4,
             "feedback": "Practice separating zh in 中国 from ch in 吃.",
             "example_sentence": "我想吃中国菜。",
@@ -357,23 +362,30 @@ def _tutor_realtime_system_prompt() -> str:
         "Your realtime reply will be spoken by text-to-speech. "
         "A short acknowledgement has already been spoken: 我来帮你改一句。 "
         "Do not repeat that acknowledgement. "
-        "Reply with a maximum of 2 short spoken sentences. "
-        "The first sentence must be the corrected phrase or direct replacement. "
-        "The optional second sentence asks the learner to repeat or answer. "
-        "Do not explain every mistake in the spoken reply; save detailed "
-        "feedback for the structured analysis call. "
-        "The first generated sentence must be under 25 Chinese characters. "
-        "Use mainly Mandarin, with brief English only if necessary. "
+        "Sound like a friendly Mandarin tutor in a live call, not a fixed "
+        "correction template. "
+        "Usually reply with 2 to 4 short spoken sentences and target 6 to 10 "
+        "seconds of speech. "
+        "Give at most one main correction or natural recast, then ask one "
+        "natural follow-up question or repeat prompt. "
+        "Avoid always starting with 可以说 or always asking 现在请你说一遍. "
+        "Do not over-explain every mistake in the spoken reply; save detailed "
+        "feedback, pinyin, and pronunciation notes for the structured analysis "
+        "call. "
+        "For HSK1-HSK2, be English-friendly with a clear Mandarin practice "
+        "phrase. For HSK3, use mixed English/Chinese and simple Mandarin. "
+        "For HSK4, use mostly Mandarin with short English only if useful. "
+        "For HSK5-HSK6, use Mandarin-first natural correction with minimal "
+        "English. "
         "Do not use emoji, markdown, bullet points, parentheses, slash marks, "
-        "plus signs, weird symbols, or quote-heavy explanations. "
+        "plus signs, weird symbols, long pinyin blocks, or quote-heavy "
+        "explanations. "
         "Avoid nested Chinese quotation marks. "
         "End every sentence with normal Chinese punctuation: 。！？ "
-        "For HSK1-HSK3, target 55 Chinese characters or fewer. "
-        "For HSK4-HSK6, target 80 Chinese characters or fewer. "
         "Use the provided scenario dynamically; never hardcode one scene. "
         "Do not invent specific dish, item, or place examples unless the learner "
         "mentioned them or the scenario strongly needs a placeholder. "
-        "Keep the reply concise, friendly, and suitable for sentence-level TTS."
+        "Keep the reply concise, warm, and suitable for sentence-level TTS."
     )
 
 
@@ -871,23 +883,29 @@ def _tutor_realtime_user_prompt(
         Realtime TTS constraints:
         - A short acknowledgement has already been spoken: 我来帮你改一句。
         - Do not repeat that acknowledgement.
-        - Reply with a maximum of 2 short spoken sentences.
-        - First sentence: give the corrected phrase or direct replacement.
-        - Optional second sentence: ask the learner to repeat or answer.
-        - The first generated sentence must be under 25 Chinese characters.
+        - Sound like a friendly Mandarin tutor in a live call, not a fixed template.
+        - Usually reply with 2 to 4 short spoken sentences.
+        - Target around 6 to 10 seconds of spoken audio.
+        - Give at most one main correction or natural recast.
+        - Ask one natural follow-up question or repeat prompt.
+        - Avoid repetitive templates like always starting with 可以说 or always
+          saying 现在请你说一遍.
         - Do not use emoji, markdown, bullets, parentheses, slash marks, plus signs,
-          tables, headings, or quote-heavy examples.
-        - Avoid nested Chinese quotation marks, long explanations, and multiple
-          teaching points.
+          tables, headings, long pinyin blocks, or quote-heavy examples.
+        - Avoid nested Chinese quotation marks, lecture-style explanations, and
+          multiple teaching points.
         - End each sentence with normal Chinese punctuation: 。！？
-        - For HSK1-HSK3, target 55 Chinese characters or fewer.
-        - For HSK4-HSK6, target 80 Chinese characters or fewer.
+        - HSK1-HSK2: English-friendly, with one clear Mandarin practice phrase.
+        - HSK3: mixed English/Chinese, simple Mandarin.
+        - HSK4: mostly Mandarin, short English only if useful.
+        - HSK5-HSK6: Mandarin-first, natural correction, minimal English.
         - Use the provided scenario dynamically: {scenario}.
         - Do not invent specific dish, item, or place examples unless the learner
           mentioned them or the scenario strongly needs a placeholder.
-        - Save detailed mistake explanations for the structured feedback call.
+        - Save detailed mistake explanations, pinyin, and pronunciation/tone notes
+          for the structured feedback call.
 
-        Give one useful correction and, if needed, one short repeat prompt.
+        Give one natural correction/recast and one conversational next turn.
         """
     ).strip()
 
@@ -933,6 +951,15 @@ def _analysis_system_prompt() -> str:
         Allowed weakness categories: {allowed_categories}.
         The JSON must match this exact shape:
         {json.dumps(ANALYSIS_JSON_EXAMPLE, ensure_ascii=False, indent=2)}
+        Optional frontend correction-card fields may be null or omitted:
+        target_pinyin, heard_pinyin, problem_sound, problem_tone,
+        display_correction.
+        When identifying pronunciation or tone issues, include pinyin with tone
+        marks when helpful. Use problem_sound for issues like sh/s, zh/ch, r/l,
+        or finals. Use problem_tone for tone numbers or tone patterns. If ASR
+        appears to confuse contextually similar characters such as 是 and 市,
+        distinguish likely transcript/context confusion from a real
+        pronunciation issue instead of overclaiming.
         Severity must be an integer from 1 to 5.
         Scores must be integers from 0 to 100.
         If the answer is mostly correct, include at least one useful fluency or
@@ -951,7 +978,9 @@ def _analysis_user_prompt(transcript: str, scenario: str, level: str) -> str:
         Level guidance: {_level_guidance(level)}
 
         Analyze this response for Mandarin pronunciation, tone, vocabulary,
-        grammar, fluency, and hesitation weaknesses. Return only valid JSON.
+        grammar, fluency, and hesitation weaknesses. Include pinyin, problem
+        sounds, problem tones, and a display correction when useful for a
+        frontend correction card. Return only valid JSON.
         """
     ).strip()
 
@@ -987,6 +1016,9 @@ def _fake_analysis(transcript: str, scenario: str, level: str) -> AnalysisRespon
             type=MistakeType.PRONUNCIATION,
             weakness_category=WeaknessCategory.ZH_CH_CONFUSION,
             target="中国菜 / 吃",
+            target_pinyin="Zhōngguó cài / chī",
+            problem_sound="zh/ch",
+            display_correction="中国菜 zhōngguó cài；吃 chī",
             severity=4,
             feedback="Practice separating zh in 中国 from ch in 吃.",
             example_sentence="我想吃中国菜。",

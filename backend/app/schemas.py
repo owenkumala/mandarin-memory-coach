@@ -75,6 +75,11 @@ class MistakeAnalysis(BaseModel):
     type: MistakeType
     weakness_category: WeaknessCategory
     target: str
+    target_pinyin: str | None = None
+    heard_pinyin: str | None = None
+    problem_sound: str | None = None
+    problem_tone: str | None = None
+    display_correction: str | None = None
     severity: int = Field(ge=1, le=5)
     feedback: str
     example_sentence: str

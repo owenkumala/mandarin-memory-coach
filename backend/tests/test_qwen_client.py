@@ -14,11 +14,19 @@ import pytest
 
 from app.core.certificates import configure_python_ssl_certificates
 from app.core.config import Settings
-from app.schemas import AnalysisResponse, MemoryResponse
+from app.schemas import (
+    AnalysisResponse,
+    MemoryResponse,
+    MistakeAnalysis,
+    MistakeType,
+    WeaknessCategory,
+)
 from app.services import qwen_client
 from app.services.qwen_client import (
     QwenClient,
     _asr_api_key,
+    _analysis_system_prompt,
+    _analysis_user_prompt,
     _build_asr_audio_ref,
     _extract_asr_transcript,
     _safe_error_detail,
@@ -201,24 +209,78 @@ def test_realtime_tutor_prompt_is_tts_safe_and_level_aware() -> None:
 
     assert "A short acknowledgement has already been spoken" in system_prompt
     assert "Do not repeat that acknowledgement" in system_prompt
-    assert "maximum of 2 short spoken sentences" in system_prompt
-    assert "corrected phrase or direct replacement" in system_prompt
-    assert "asks the learner to repeat or answer" in system_prompt
-    assert "save detailed feedback for the structured analysis call" in system_prompt
-    assert "under 25 Chinese characters" in system_prompt
+    assert "friendly Mandarin tutor in a live call" in system_prompt
+    assert "2 to 4 short spoken sentences" in system_prompt
+    assert "6 to 10 seconds of speech" in system_prompt
+    assert "at most one main correction" in system_prompt
+    assert "natural follow-up question or repeat prompt" in system_prompt
+    assert "Avoid always starting with 可以说" in system_prompt
+    assert "save detailed feedback, pinyin, and pronunciation notes" in system_prompt
+    assert "For HSK1-HSK2, be English-friendly" in system_prompt
+    assert "For HSK5-HSK6, use Mandarin-first" in system_prompt
     assert "Do not use emoji" in system_prompt
     assert "Avoid nested Chinese quotation marks" in system_prompt
-    assert "55 Chinese characters or fewer" in system_prompt
-    assert "80 Chinese characters or fewer" in system_prompt
     assert "Use the provided scenario dynamically" in system_prompt
     assert "HSK3 lower intermediate" in user_prompt
     assert "hotel check-in" in user_prompt
-    assert "maximum of 2 short spoken sentences" in user_prompt
-    assert "First sentence: give the corrected phrase" in user_prompt
-    assert "Save detailed mistake explanations" in user_prompt
+    assert "2 to 4 short spoken sentences" in user_prompt
+    assert "HSK3: mixed English/Chinese" in user_prompt
+    assert "one conversational next turn" in user_prompt
+    assert "Save detailed mistake explanations, pinyin" in user_prompt
     assert "For HSK3, use practical restaurant language" not in user_prompt
     assert "我要一份宫保鸡丁" not in system_prompt
     assert "我要一份宫保鸡丁" not in user_prompt
+
+
+def test_analysis_prompt_requests_frontend_friendly_pronunciation_fields() -> None:
+    """Structured analysis prompt asks for optional pinyin correction metadata."""
+    system_prompt = _analysis_system_prompt()
+    user_prompt = _analysis_user_prompt(
+        transcript="我是 Owen",
+        scenario="self introduction",
+        level="HSK2 elementary",
+    )
+
+    assert "target_pinyin" in system_prompt
+    assert "heard_pinyin" in system_prompt
+    assert "problem_sound" in system_prompt
+    assert "problem_tone" in system_prompt
+    assert "display_correction" in system_prompt
+    assert "pinyin" in system_prompt
+    assert "tone" in system_prompt
+    assert "是 and 市" in system_prompt
+    assert "frontend correction card" in user_prompt
+
+
+def test_mistake_analysis_optional_pronunciation_fields_serialize() -> None:
+    """Optional pinyin fields support frontend cards without breaking old payloads."""
+    mistake = MistakeAnalysis(
+        type=MistakeType.PRONUNCIATION,
+        weakness_category=WeaknessCategory.ZH_CH_CONFUSION,
+        target="我是 Owen",
+        target_pinyin="wǒ shì Owen",
+        heard_pinyin="wǒ sì Owen",
+        problem_sound="sh/s",
+        problem_tone="4th tone",
+        display_correction="是 shì, not sì",
+        severity=3,
+        feedback="Practice 是 with a clear sh sound and fourth tone.",
+        example_sentence="我是 Owen。",
+        recommended_drill="Repeat 我是 Owen three times.",
+    )
+    old_payload = {
+        "type": "grammar",
+        "weakness_category": "grammar_structure",
+        "target": "word order",
+        "severity": 2,
+        "feedback": "Move the time phrase before the verb.",
+        "example_sentence": "我明天去。",
+        "recommended_drill": "Repeat the sentence once.",
+    }
+
+    assert mistake.model_dump()["target_pinyin"] == "wǒ shì Owen"
+    assert mistake.model_dump()["display_correction"] == "是 shì, not sì"
+    assert MistakeAnalysis.model_validate(old_payload).target_pinyin is None
 
 
 def test_fake_asr_still_returns_fixed_transcript() -> None:

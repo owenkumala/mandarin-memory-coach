@@ -321,16 +321,27 @@ TTS chunk tasks have completed or emitted warning errors.
 
 Realtime tutor text is prompted more strictly than the REST tutor response
 because it is fed directly into sentence-level TTS. The realtime prompt asks for
-1-2 short spoken sentences, mainly Mandarin, normal Chinese sentence endings,
-no emoji, no markdown, no bullet points, no quote-heavy examples, and concise
-HSK-appropriate wording. The first model-generated sentence should be the
-correction or direct replacement; the optional second sentence should ask the
-learner to repeat or answer. HSK1-HSK3 replies target about 55 Chinese
-characters or fewer; HSK4-HSK6 replies target about 80. Detailed mistake
-explanations, memory updates, and next-drill analysis arrive later through
-`feedback_ready` and `memory_updated` instead of being spoken immediately.
-The scenario comes from the WebSocket `start` message; `restaurant ordering` is
-only the default/demo scenario, not a hardcoded realtime tutoring scene.
+2-4 short spoken sentences that feel like a friendly Mandarin tutor call, not a
+rigid correction template. It should give at most one main correction or
+natural recast, then one natural follow-up question or repeat prompt, with a
+target spoken time of about 6-10 seconds. The prompt explicitly avoids robotic
+patterns such as always starting with `可以说` or always asking
+`现在请你说一遍`.
+
+Realtime spoken language adapts by HSK level: HSK1-HSK2 may be English-friendly
+with one clear Mandarin practice phrase, HSK3 may mix English and simple
+Mandarin, HSK4 is mostly Mandarin with short English only if useful, and HSK5/6
+is Mandarin-first. The scenario comes from the WebSocket `start` message;
+`restaurant ordering` is only the default/demo scenario, not a hardcoded
+realtime tutoring scene. Detailed mistake explanations, pinyin,
+pronunciation/tone notes, memory updates, and next-drill analysis arrive later
+through `feedback_ready` and `memory_updated` instead of being spoken
+immediately.
+
+Structured feedback supports optional frontend correction-card fields on each
+mistake: `target_pinyin`, `heard_pinyin`, `problem_sound`, `problem_tone`, and
+`display_correction`. These fields are optional for backward compatibility and
+are intended for visual feedback cards rather than long spoken replies.
 
 After `asr_final`, realtime mode emits the fast acknowledgement sentence as
 sequence `0`. If the shared fast-ack audio file is already cached, the matching
